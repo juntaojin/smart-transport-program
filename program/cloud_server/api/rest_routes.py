@@ -1,0 +1,296 @@
+import os
+import json
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete, func
+from loguru import logger
+import psutil
+
+from cloud_server.database.connection import get_db
+from cloud_server.database.orm_models import (
+    PlateRecord, VehicleStat, ParkingViolation, RoadAnomaly, SystemMetric, ModelConfig
+)
+from cloud_server.config import BASE_DIR, DATA_DIR, NO_PARKING_ZONES
+
+router = APIRouter(prefix="/api")
+
+# --- Helper for Whitelist ---
+WHITELIST_FILE = os.path.join(DATA_DIR, "whitelist.json")
+
+def load_whitelist():
+    if not os.path.exists(WHITELIST_FILE):
+        with open(WHITELIST_FILE, "w", encoding="utf-8") as f:
+            json.dump([], f)
+        return []
+    try:
+        with open(WHITELIST_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error reading whitelist: {e}")
+        return []
+
+def save_whitelist(whitelist):
+    try:
+        with open(WHITELIST_FILE, "w", encoding="utf-8") as f:
+            json.dump(whitelist, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving whitelist: {e}")
+
+
+# --- 1. Whitelist API (Plate Records & Management) ---
+
+@router.get("/whitelist")
+async def get_whitelist():
+    """Retrieve all white-listed license plates"""
+    return {"code": 200, "message": "success", "data": load_whitelist()}
+
+@router.post("/whitelist")
+async def add_to_whitelist(payload: dict):
+    """Add a new plate number to the whitelist"""
+    plate = payload.get("plate_number")
+    if not plate:
+        raise HTTPException(status_code=400, detail="plate_number is required")
+    
+    whitelist = load_whitelist()
+    if plate not in whitelist:
+        whitelist.append(plate)
+        save_whitelist(whitelist)
+        
+    return {"code": 200, "message": "success", "data": whitelist}
+
+@router.delete("/whitelist/{plate}")
+async def remove_from_whitelist(plate: str):
+    """Remove a plate number from the whitelist"""
+    whitelist = load_whitelist()
+    if plate in whitelist:
+        whitelist.remove(plate)
+        save_whitelist(whitelist)
+        return {"code": 200, "message": "success", "data": whitelist}
+    raise HTTPException(status_code=404, detail=f"Plate '{plate}' not in whitelist")
+
+
+# --- 2. Statistical Analysis APIs ---
+
+@router.get("/stats/vehicles")
+async def get_vehicle_stats(
+    zone: str = None,
+    minutes: int = 30,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get historical vehicle density statistics"""
+    time_limit = datetime.utcnow() - timedelta(minutes=minutes)
+    query = select(VehicleStat).where(VehicleStat.timestamp >= time_limit)
+    if zone:
+        query = query.where(VehicleStat.zone_name == zone)
+    query = query.order_by(VehicleStat.timestamp.asc())
+    
+    result = await db.execute(query)
+    stats = result.scalars().all()
+    
+    data = [{
+        "id": s.id,
+        "zone_name": s.zone_name,
+        "vehicle_count": s.vehicle_count,
+        "congestion_level": s.congestion_level,
+        "timestamp": s.timestamp.isoformat()
+    } for s in stats]
+    
+    return {"code": 200, "message": "success", "data": data}
+
+@router.get("/stats/violations")
+async def get_violation_stats(
+    zone: str = None,
+    minutes: int = 60,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get parking violations list"""
+    time_limit = datetime.utcnow() - timedelta(minutes=minutes)
+    query = select(ParkingViolation).where(ParkingViolation.timestamp >= time_limit)
+    if zone:
+        query = query.where(ParkingViolation.zone_name == zone)
+    query = query.order_by(ParkingViolation.timestamp.desc())
+    
+    result = await db.execute(query)
+    violations = result.scalars().all()
+    
+    data = [{
+        "id": v.id,
+        "vehicle_id": v.vehicle_id,
+        "zone_name": v.zone_name,
+        "parking_duration": v.parking_duration,
+        "start_time": v.start_time.isoformat(),
+        "end_time": v.end_time.isoformat() if v.end_time else None,
+        "alert_triggered": v.alert_triggered,
+        "timestamp": v.timestamp.isoformat()
+    } for v in violations]
+    
+    return {"code": 200, "message": "success", "data": data}
+
+@router.get("/stats/anomalies")
+async def get_anomaly_stats(
+    minutes: int = 60,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get road anomaly detection records"""
+    time_limit = datetime.utcnow() - timedelta(minutes=minutes)
+    query = select(RoadAnomaly).where(RoadAnomaly.timestamp >= time_limit).order_by(RoadAnomaly.timestamp.desc())
+    
+    result = await db.execute(query)
+    anomalies = result.scalars().all()
+    
+    data = [{
+        "id": a.id,
+        "anomaly_type": a.anomaly_type,
+        "confidence": a.confidence,
+        "location_x": a.location_x,
+        "location_y": a.location_y,
+        "affected_lane": a.affected_lane,
+        "timestamp": a.timestamp.isoformat()
+    } for a in anomalies]
+    
+    return {"code": 200, "message": "success", "data": data}
+
+@router.get("/stats/system")
+async def get_system_stats(
+    minutes: int = 15,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get system resource monitoring metrics (real-time + history)"""
+    # Fetch real-time metrics first
+    cpu = psutil.cpu_percent()
+    mem = psutil.virtual_memory().percent
+    disk = psutil.disk_usage("/").percent
+    
+    net_before = psutil.net_io_counters()
+    # Estimate network usage over 0.2s
+    import time
+    time.sleep(0.2)
+    net_after = psutil.net_io_counters()
+    
+    # Bytes to Mbps
+    rx_speed = ((net_after.bytes_recv - net_before.bytes_recv) * 8) / (1024 * 1024 * 0.2)
+    tx_speed = ((net_after.bytes_sent - net_before.bytes_sent) * 8) / (1024 * 1024 * 0.2)
+
+    # Fetch historical stats
+    time_limit = datetime.utcnow() - timedelta(minutes=minutes)
+    query = select(SystemMetric).where(SystemMetric.timestamp >= time_limit).order_by(SystemMetric.timestamp.asc())
+    result = await db.execute(query)
+    history = result.scalars().all()
+
+    history_data = [{
+        "cpu_usage": h.cpu_usage,
+        "gpu_usage": h.gpu_usage,
+        "memory_usage": h.memory_usage,
+        "disk_usage": h.disk_usage,
+        "network_rx": h.network_rx,
+        "network_tx": h.network_tx,
+        "video_fps": h.video_fps,
+        "active_devices": h.active_devices,
+        "timestamp": h.timestamp.isoformat()
+    } for h in history]
+
+    realtime = {
+        "cpu_usage": cpu,
+        "gpu_usage": None,  # Will remain null if no nvidia-smi GPU
+        "memory_usage": mem,
+        "disk_usage": disk,
+        "network_rx": rx_speed,
+        "network_tx": tx_speed,
+        "video_fps": 0.0,
+        "active_devices": 0
+    }
+    
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {
+            "realtime": realtime,
+            "history": history_data
+        }
+    }
+
+
+# --- 3. Configuration Management APIs ---
+
+@router.get("/configs/models")
+async def get_model_configs(request: Request):
+    """Get active pipeline nodes and their configuration state"""
+    pipeline = request.app.state.pipeline
+    data = []
+    for name, node in pipeline.nodes.items():
+        data.append({
+            "model_name": name,
+            "enabled": node.enabled,
+            "confidence_threshold": getattr(node, "confidence", getattr(node, "threshold", 0.5)),
+            "iou_threshold": 0.45
+        })
+    return {"code": 200, "message": "success", "data": data}
+
+@router.put("/configs/models")
+async def update_model_configs(payload: dict, request: Request):
+    """Modify AI model configurations and toggle nodes in real-time"""
+    model_name = payload.get("model_name")
+    enabled = payload.get("enabled")
+    conf_threshold = payload.get("confidence_threshold")
+    
+    if not model_name:
+        raise HTTPException(status_code=400, detail="model_name is required")
+        
+    pipeline = request.app.state.pipeline
+    
+    if model_name not in pipeline.nodes:
+        raise HTTPException(status_code=404, detail=f"Model node '{model_name}' not found")
+        
+    node = pipeline.nodes[model_name]
+    
+    # 1. Update enabled state
+    if enabled is not None:
+        pipeline.toggle_node(model_name, enabled)
+        
+    # 2. Update confidence/threshold parameter if supported
+    if conf_threshold is not None:
+        if hasattr(node, "confidence"):
+            node.confidence = float(conf_threshold)
+        elif hasattr(node, "threshold"):
+            node.threshold = float(conf_threshold)
+            
+    logger.info(f"Updated configuration for {model_name}: enabled={node.enabled}, threshold={conf_threshold}")
+    
+    return {
+        "code": 200, 
+        "message": "success", 
+        "data": {
+            "model_name": model_name,
+            "enabled": node.enabled,
+            "confidence_threshold": getattr(node, "confidence", getattr(node, "threshold", 0.5))
+        }
+    }
+
+@router.get("/configs/zones")
+async def get_zones_config(request: Request):
+    """Get configured no parking zones"""
+    pipeline = request.app.state.pipeline
+    # Fetch from violation detection node if active, or fall back to default
+    zones = NO_PARKING_ZONES
+    if "violation_detection" in pipeline.nodes:
+        zones = pipeline.nodes["violation_detection"].zones
+    return {"code": 200, "message": "success", "data": zones}
+
+@router.put("/configs/zones")
+async def update_zones_config(payload: list, request: Request):
+    """Update configured forbidden zones in memory"""
+    pipeline = request.app.state.pipeline
+    if "violation_detection" in pipeline.nodes:
+        node = pipeline.nodes["violation_detection"]
+        node.zones = payload
+        logger.info("Updated no parking zones list in Violation Detection Node")
+        return {"code": 200, "message": "success", "data": node.zones}
+    raise HTTPException(status_code=400, detail="Violation detection node is not initialized")
+
+
+# --- 4. Health Check API ---
+
+@router.get("/health")
+async def health_check():
+    return {"code": 200, "message": "healthy", "data": {"status": "OK", "timestamp": datetime.utcnow().isoformat()}}

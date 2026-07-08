@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>智慧交通 - 边缘推流控制台</title>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0f172a;
+      --bg-secondary: rgba(30, 41, 59, 0.7);
+      --accent-color: #3b82f6;
+      --accent-success: #10b981;
+      --accent-error: #ef4444;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --border-color: rgba(255, 255, 255, 0.08);
+      --glass-glow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: radial-gradient(circle at top right, #1e293b, #0f172a);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 580px;
+      background: var(--bg-secondary);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      box-shadow: var(--glass-glow);
+      padding: 40px;
+      transition: transform 0.3s ease;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+
+    .header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #60a5fa, #3b82f6);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 8px;
+    }
+
+    .header p {
+      font-size: 0.95rem;
+      color: var(--text-muted);
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-radius: 9999px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin: 15px auto 0;
+      border: 1px solid transparent;
+    }
+
+    .status-badge.stopped {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--accent-error);
+      border-color: rgba(239, 68, 68, 0.2);
+    }
+
+    .status-badge.streaming {
+      background: rgba(16, 185, 129, 0.1);
+      color: var(--accent-success);
+      border-color: rgba(16, 185, 129, 0.2);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: currentColor;
+    }
+
+    .status-badge.streaming .status-dot {
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.9); opacity: 0.5; }
+      50% { transform: scale(1.2); opacity: 1; }
+      100% { transform: scale(0.9); opacity: 0.5; }
+    }
+
+    .form-group {
+      margin-bottom: 22px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .input-control {
+      width: 100%;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 12px 16px;
+      color: var(--text-main);
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .input-control:focus {
+      border-color: var(--accent-color);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+    }
+
+    select.input-control {
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 16px center;
+      background-size: 16px;
+      padding-right: 40px;
+    }
+
+    .slider-container {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+    }
+
+    .slider-container input[type="range"] {
+      flex: 1;
+      accent-color: var(--accent-color);
+    }
+
+    .slider-val {
+      font-weight: 600;
+      min-width: 32px;
+      text-align: right;
+    }
+
+    .actions {
+      margin-top: 35px;
+      display: flex;
+      gap: 15px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 14px 24px;
+      border-radius: 14px;
+      font-size: 1rem;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.25s ease;
+    }
+
+    .btn-start {
+      background: var(--accent-color);
+      color: white;
+      box-shadow: 0 4px 14px 0 rgba(59, 130, 246, 0.3);
+    }
+
+    .btn-start:hover {
+      background: #2563eb;
+      transform: translateY(-1px);
+    }
+
+    .btn-stop {
+      background: var(--accent-error);
+      color: white;
+      box-shadow: 0 4px 14px 0 rgba(239, 68, 68, 0.3);
+    }
+
+    .btn-stop:hover {
+      background: #dc2626;
+      transform: translateY(-1px);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
+    }
+
+    /* Video Path visibility */
+    #path-group {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="header">
+      <h1>边缘数据推流控制台</h1>
+      <p>智慧交通系统摄像头与模拟数据采集节点</p>
+      
+      <div id="status-badge" class="status-badge stopped">
+        <span class="status-dot"></span>
+        <span id="status-text">未开始推流</span>
+      </div>
+    </div>
+
+    <form id="stream-form">
+      <div class="form-group">
+        <label for="stream-mode">数据采集源</label>
+        <select id="stream-mode" class="input-control">
+          <option value="mock">🚦 模拟交通场景 (推荐测试)</option>
+          <option value="camera">📹 本地摄像头 (0号设备)</option>
+          <option value="video">🎞️ 监控视频文件</option>
+        </select>
+      </div>
+
+      <div class="form-group" id="path-group">
+        <label for="video-path">视频文件绝对路径</label>
+        <input type="text" id="video-path" class="input-control" placeholder="如: /Users/jarrite/traffic.mp4">
+      </div>
+
+      <div class="form-group">
+        <label for="ws-url">云端 WebSocket 地址</label>
+        <input type="text" id="ws-url" class="input-control" value="ws://10.217.55.162:8000/ws/stream/cam_01">
+      </div>
+
+      <div class="form-group">
+        <label for="fps-range">推流帧率 (FPS)</label>
+        <div class="slider-container">
+          <input type="range" id="fps-range" min="5" max="30" value="10">
+          <span class="slider-val" id="fps-val">10</span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="button" id="btn-start" class="btn btn-start">🚀 开始推流</button>
+        <button type="button" id="btn-stop" class="btn btn-stop" disabled>🛑 停止推流</button>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    const streamMode = document.getElementById("stream-mode");
+    const pathGroup = document.getElementById("path-group");
+    const videoPath = document.getElementById("video-path");
+    const wsUrl = document.getElementById("ws-url");
+    const fpsRange = document.getElementById("fps-range");
+    const fpsVal = document.getElementById("fps-val");
+    const btnStart = document.getElementById("btn-start");
+    const btnStop = document.getElementById("btn-stop");
+    const statusBadge = document.getElementById("status-badge");
+    const statusText = document.getElementById("status-text");
+
+    // Toggle video path input visibility
+    streamMode.addEventListener("change", () => {
+      if (streamMode.value === "video") {
+        pathGroup.style.display = "block";
+      } else {
+        pathGroup.style.display = "none";
+      }
+    });
+
+    // Update FPS value preview
+    fpsRange.addEventListener("input", () => {
+      fpsVal.textContent = fpsRange.value;
+    });
+
+    // Fetch current status
+    async function updateStatus() {
+      try {
+        const res = await fetch("/api/status");
+        const data = await res.json();
+        
+        if (data.streaming) {
+          statusBadge.className = "status-badge streaming";
+          statusText.textContent = "正在实时推流中";
+          btnStart.disabled = true;
+          btnStop.disabled = false;
+          streamMode.disabled = true;
+          videoPath.disabled = true;
+          wsUrl.disabled = true;
+          fpsRange.disabled = true;
+        } else {
+          statusBadge.className = "status-badge stopped";
+          statusText.textContent = "未开始推流";
+          btnStart.disabled = false;
+          btnStop.disabled = true;
+          streamMode.disabled = false;
+          videoPath.disabled = false;
+          wsUrl.disabled = false;
+          fpsRange.disabled = false;
+        }
+      } catch (err) {
+        console.error("无法获取边缘节点状态:", err);
+      }
+    }
+
+    // Start Streaming
+    btnStart.addEventListener("click", async () => {
+      const payload = {
+        mode: streamMode.value,
+        ws_url: wsUrl.value,
+        fps: parseInt(fpsRange.value),
+        video_path: videoPath.value
+      };
+
+      try {
+        const res = await fetch("/api/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.status === "success") {
+          updateStatus();
+        } else {
+          alert("启动失败: " + data.message);
+        }
+      } catch (err) {
+        alert("请求云服务端失败");
+      }
+    });
+
+    // Stop Streaming
+    btnStop.addEventListener("click", async () => {
+      try {
+        const res = await fetch("/api/stop", { method: "POST" });
+        const data = await res.json();
+        if (data.status === "success") {
+          updateStatus();
+        }
+      } catch (err) {
+        alert("停止失败");
+      }
+    });
+
+    // Initial check
+    updateStatus();
+    // Poll status periodically
+    setInterval(updateStatus, 3000);
+  </script>
+</body>
+</html>
