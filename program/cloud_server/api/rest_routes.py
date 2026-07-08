@@ -157,20 +157,8 @@ async def get_system_stats(
     db: AsyncSession = Depends(get_db)
 ):
     """Get system resource monitoring metrics (real-time + history)"""
-    # Fetch real-time metrics first
-    cpu = psutil.cpu_percent()
-    mem = psutil.virtual_memory().percent
-    disk = psutil.disk_usage("/").percent
-    
-    net_before = psutil.net_io_counters()
-    # Estimate network usage over 0.2s
-    import time
-    time.sleep(0.2)
-    net_after = psutil.net_io_counters()
-    
-    # Bytes to Mbps
-    rx_speed = ((net_after.bytes_recv - net_before.bytes_recv) * 8) / (1024 * 1024 * 0.2)
-    tx_speed = ((net_after.bytes_sent - net_before.bytes_sent) * 8) / (1024 * 1024 * 0.2)
+    from cloud_server.utils.system_info import get_detailed_metrics
+    metrics = get_detailed_metrics()
 
     # Fetch historical stats
     time_limit = datetime.utcnow() - timedelta(minutes=minutes)
@@ -191,14 +179,20 @@ async def get_system_stats(
     } for h in history]
 
     realtime = {
-        "cpu_usage": cpu,
-        "gpu_usage": None,  # Will remain null if no nvidia-smi GPU
-        "memory_usage": mem,
-        "disk_usage": disk,
-        "network_rx": rx_speed,
-        "network_tx": tx_speed,
+        "cpu_usage": metrics["cpu"]["percent"],
+        "gpu_usage": metrics["gpu"]["load"] if metrics["gpu"] else None,
+        "memory_usage": metrics["memory"]["percent"],
+        "disk_usage": metrics["disk"]["percent"],
+        "network_rx": metrics["network"]["rx_mbps"],
+        "network_tx": metrics["network"]["tx_mbps"],
         "video_fps": 0.0,
-        "active_devices": 0
+        "active_devices": 0,
+        
+        # Advanced details
+        "cpu_details": metrics["cpu"],
+        "memory_details": metrics["memory"],
+        "disk_details": metrics["disk"],
+        "gpu_details": metrics["gpu"]
     }
     
     return {

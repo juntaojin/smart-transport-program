@@ -46,7 +46,13 @@ export default function Dashboard() {
     memory_usage: 0,
     disk_usage: 0,
     network_rx: 0,
-    network_tx: 0
+    network_tx: 0,
+    
+    // Detailed metrics from backend
+    cpu_details: null as { cores_physical: number; cores_logical: number; frequency_current_mhz: number; frequency_max_mhz: number } | null,
+    memory_details: null as { total_gb: number; used_gb: number; free_gb: number } | null,
+    disk_details: null as { total_gb: number; used_gb: number; free_gb: number } | null,
+    gpu_details: null as { name: string; load: number; memory_total: number; memory_used: number; memory_percent: number; temperature: number } | null
   });
 
   const [metricsHistory, setMetricsHistory] = useState<MetricHistoryItem[]>([]);
@@ -57,8 +63,25 @@ export default function Dashboard() {
     const fetchHistory = async () => {
       try {
         const res = await statsAPI.system(15);
-        if (res.code === 200 && res.data.history) {
-          setMetricsHistory(res.data.history);
+        if (res.code === 200) {
+          if (res.data.history) {
+            setMetricsHistory(res.data.history);
+          }
+          if (res.data.realtime) {
+            const rt = res.data.realtime;
+            setMetrics({
+              cpu_usage: rt.cpu_usage,
+              gpu_usage: rt.gpu_usage,
+              memory_usage: rt.memory_usage,
+              disk_usage: rt.disk_usage,
+              network_rx: rt.network_rx,
+              network_tx: rt.network_tx,
+              cpu_details: rt.cpu_details,
+              memory_details: rt.memory_details,
+              disk_details: rt.disk_details,
+              gpu_details: rt.gpu_details
+            });
+          }
         }
       } catch (err) {
         console.error('Failed to load metrics history:', err);
@@ -81,16 +104,21 @@ export default function Dashboard() {
       if (data.violations) setViolations(data.violations);
       if (data.anomalies) setAnomalies(data.anomalies);
       
-      // Update system metrics real-time values
-      if (data.vehicles) {
-        // Mock system metric updates that blend in with websocket
-        setMetrics(prev => ({
-          ...prev,
-          cpu_usage: Math.min(99, Math.max(10, prev.cpu_usage + (Math.random() * 6 - 3))),
-          memory_usage: Math.min(99, Math.max(20, prev.memory_usage + (Math.random() * 2 - 1))),
-          network_rx: data.fps * 1.2 || 12.5,
-          network_tx: data.fps * 0.4 || 4.2
-        }));
+      // Update system metrics real-time values from websocket broadcast
+      if (data.system_metrics) {
+        setMetrics({
+          cpu_usage: data.system_metrics.cpu.percent,
+          gpu_usage: data.system_metrics.gpu ? data.system_metrics.gpu.load : null,
+          memory_usage: data.system_metrics.memory.percent,
+          disk_usage: data.system_metrics.disk.percent,
+          network_rx: data.system_metrics.network.rx_mbps,
+          network_tx: data.system_metrics.network.tx_mbps,
+          
+          cpu_details: data.system_metrics.cpu,
+          memory_details: data.system_metrics.memory,
+          disk_details: data.system_metrics.disk,
+          gpu_details: data.system_metrics.gpu
+        });
       }
     };
 
@@ -277,6 +305,11 @@ export default function Dashboard() {
                     style={{ width: `${metrics.cpu_usage}%` }}
                   />
                 </div>
+                {metrics.cpu_details && (
+                  <span className="text-[10px] text-slate-500 mt-1 block">
+                    核心: 物理 {metrics.cpu_details.cores_physical} / 逻辑 {metrics.cpu_details.cores_logical} | 频率: {metrics.cpu_details.frequency_current_mhz} MHz
+                  </span>
+                )}
               </div>
 
               {/* Memory */}
@@ -293,6 +326,32 @@ export default function Dashboard() {
                     style={{ width: `${metrics.memory_usage}%` }}
                   />
                 </div>
+                {metrics.memory_details && (
+                  <span className="text-[10px] text-slate-500 mt-1 block">
+                    已用: {metrics.memory_details.used_gb.toFixed(1)} GB / 共 {metrics.memory_details.total_gb.toFixed(1)} GB
+                  </span>
+                )}
+              </div>
+
+              {/* Disk */}
+              <div>
+                <div className="flex justify-between text-sm mb-1">
+                  <span className="text-slate-400 flex items-center gap-1.5">
+                    <HardDrive size={14} className="text-emerald-400" /> 磁盘空间
+                  </span>
+                  <span className="font-semibold">{metrics.disk_usage.toFixed(1)}%</span>
+                </div>
+                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                  <div 
+                    className="bg-emerald-500 h-full transition-all duration-500 ease-out" 
+                    style={{ width: `${metrics.disk_usage}%` }}
+                  />
+                </div>
+                {metrics.disk_details && (
+                  <span className="text-[10px] text-slate-500 mt-1 block">
+                    已用: {metrics.disk_details.used_gb.toFixed(0)} GB / 共 {metrics.disk_details.total_gb.toFixed(0)} GB
+                  </span>
+                )}
               </div>
 
               {/* Network */}
@@ -310,6 +369,56 @@ export default function Dashboard() {
                   <p className="text-lg font-bold text-slate-100 mt-1">{metrics.network_tx.toFixed(1)} <span className="text-xs font-normal text-slate-400">Mbps</span></p>
                 </div>
               </div>
+
+              {/* Nvidia GPU Details */}
+              {metrics.gpu_details && (
+                <div className="mt-4 pt-4 border-t border-white/5 space-y-3">
+                  <div className="flex justify-between text-xs font-bold text-slate-200">
+                    <span className="flex items-center gap-1.5">
+                      <Cpu size={14} className="text-emerald-400 animate-pulse" /> 
+                      显卡: {metrics.gpu_details.name}
+                    </span>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    {/* GPU Load */}
+                    <div>
+                      <div className="flex justify-between text-[11px] mb-1">
+                        <span className="text-slate-400">GPU 使用率</span>
+                        <span className="font-semibold text-slate-300">{metrics.gpu_details.load}%</span>
+                      </div>
+                      <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                        <div 
+                          className="bg-emerald-400 h-full transition-all duration-500 ease-out" 
+                          style={{ width: `${metrics.gpu_details.load}%` }}
+                        />
+                      </div>
+                    </div>
+                    
+                    {/* GPU VRAM */}
+                    <div>
+                      <div className="flex justify-between text-[11px] mb-1">
+                        <span className="text-slate-400">显存 (VRAM)</span>
+                        <span className="font-semibold text-slate-300">{metrics.gpu_details.memory_percent}%</span>
+                      </div>
+                      <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                        <div 
+                          className="bg-emerald-400 h-full transition-all duration-500 ease-out" 
+                          style={{ width: `${metrics.gpu_details.memory_percent}%` }}
+                        />
+                      </div>
+                      <span className="text-[9px] text-slate-500 mt-0.5 block">
+                        已用: {metrics.gpu_details.memory_used.toFixed(1)} GB / 共 {metrics.gpu_details.memory_total.toFixed(0)} GB
+                      </span>
+                    </div>
+                  </div>
+                  
+                  <div className="flex justify-between text-[10px] text-slate-500">
+                    <span>GPU 温度: <strong className="text-amber-500">{metrics.gpu_details.temperature} °C</strong></span>
+                    <span>监控源: Nvidia NVML</span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

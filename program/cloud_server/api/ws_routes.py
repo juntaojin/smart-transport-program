@@ -227,15 +227,14 @@ async def save_aggregated_stats(properties, device_id):
         # E. System resource logging (Once every 10 seconds)
         if current_time - last_system_metric_time >= 10.0:
             last_system_metric_time = current_time
-            import psutil
-            cpu = psutil.cpu_percent()
-            mem = psutil.virtual_memory().percent
-            disk = psutil.disk_usage("/").percent
+            from cloud_server.utils.system_info import get_detailed_metrics
+            metrics = get_detailed_metrics()
             
             metric = SystemMetric(
-                cpu_usage=cpu,
-                memory_usage=mem,
-                disk_usage=disk,
+                cpu_usage=metrics["cpu"]["percent"],
+                gpu_usage=metrics["gpu"]["load"] if metrics["gpu"] else None,
+                memory_usage=metrics["memory"]["percent"],
+                disk_usage=metrics["disk"]["percent"],
                 video_fps=calculate_fps(),
                 active_devices=len(active_devices)
             )
@@ -298,6 +297,10 @@ async def receive_stream(websocket: WebSocket, device_id: str):
             elif v_count >= CONGESTION_MEDIUM:
                 congestion = "medium"
 
+            # Query real-time hardware metrics
+            from cloud_server.utils.system_info import get_detailed_metrics
+            sys_metrics = get_detailed_metrics()
+
             # Construct payload
             payload = {
                 "device_id": device_id,
@@ -314,7 +317,8 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                     } for i, box in enumerate(context.properties.get("vehicle_boxes", []))
                 ],
                 "violations": context.properties.get("violations", []),
-                "anomalies": context.properties.get("road_anomalies", [])
+                "anomalies": context.properties.get("road_anomalies", []),
+                "system_metrics": sys_metrics
             }
             
             # Save aggregated metrics to DB asynchronously
