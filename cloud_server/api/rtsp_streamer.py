@@ -33,6 +33,7 @@ class RTSPStreamManager:
         self._lock = threading.Lock()
         self._loop = asyncio.get_event_loop()
         self._frame_counters = {}
+        self._plate_db = {}
 
     def start_stream(self, device_id, rtsp_url):
         with self._lock:
@@ -152,6 +153,32 @@ class RTSPStreamManager:
                         success, buffer = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
                         if not success:
                             continue
+
+                        if mode == "full":
+                            track_ids = context.properties.get("track_ids", [])
+                            plates = context.properties.get("plate_numbers", [])
+                            if device_id not in self._plate_db:
+                                self._plate_db[device_id] = {}
+                            for tid, plate in zip(track_ids, plates):
+                                if plate:
+                                    self._plate_db[device_id][tid] = plate
+
+                        dev_plates = self._plate_db.get(device_id, {})
+                        track_ids = context.properties.get("track_ids", [])
+                        vehicle_boxes = context.properties.get("vehicle_boxes", [])
+                        vehicle_classes = context.properties.get("vehicle_classes", [])
+                        vehicles_payload = []
+                        for i, box in enumerate(vehicle_boxes):
+                            tid = track_ids[i] if i < len(track_ids) else None
+                            cls_name = vehicle_classes[i] if i < len(vehicle_classes) else "vehicle"
+                            plate = dev_plates.get(tid, "") if tid is not None else ""
+                            vehicles_payload.append({
+                                "id": tid,
+                                "class": cls_name,
+                                "box": [float(c) for c in box],
+                                "plate": plate
+                            })
+
                         img_b64 = base64.b64encode(buffer).decode('utf-8')
                         fps_val = calculate_fps()
 
@@ -168,14 +195,7 @@ class RTSPStreamManager:
                             "fps": fps_val,
                             "congestion_level": congestion,
                             "image": f"data:image/jpeg;base64,{img_b64}",
-                            "vehicles": [
-                                {
-                                    "id": context.properties["track_ids"][i] if i < len(context.properties.get("track_ids", [])) else None,
-                                    "class": context.properties["vehicle_classes"][i] if i < len(context.properties.get("vehicle_classes", [])) else "vehicle",
-                                    "box": [float(c) for c in box],
-                                    "plate": context.properties["plate_numbers"][i] if i < len(context.properties.get("plate_numbers", [])) else ""
-                                } for i, box in enumerate(context.properties.get("vehicle_boxes", []))
-                            ],
+                            "vehicles": vehicles_payload,
                             "violations": context.properties.get("violations", []),
                             "anomalies": context.properties.get("road_anomalies", []),
                             "system_metrics": self._get_metrics()

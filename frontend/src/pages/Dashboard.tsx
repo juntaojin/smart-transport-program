@@ -165,6 +165,26 @@ export default function Dashboard() {
     const img = new Image();
     let pendingFrame: string | null = null;
     let animating = true;
+    let canvasW = 0;
+    let canvasH = 0;
+
+    // Use ResizeObserver to detect actual container size changes
+    const parent = canvas.parentElement;
+    if (parent) {
+      const ro = new ResizeObserver(entries => {
+        for (const entry of entries) {
+          const w = entry.contentRect.width;
+          const h = entry.contentRect.height;
+          if (Math.abs(canvasW - w) > 2 || Math.abs(canvasH - h) > 2) {
+            canvasW = w;
+            canvasH = h;
+            canvas.width = w;
+            canvas.height = h;
+          }
+        }
+      });
+      ro.observe(parent);
+    }
 
     const render = () => {
       if (!animating) return;
@@ -172,25 +192,15 @@ export default function Dashboard() {
       if (currentFrame && currentFrame !== pendingFrame) {
         pendingFrame = currentFrame;
         img.onload = () => {
-          if (!animating) return;
-          const parent = canvas.parentElement;
-          if (parent) {
-            const w = parent.clientWidth;
-            const h = parent.clientHeight;
-            if (canvas.width !== w || canvas.height !== h) {
-              canvas.width = w;
-              canvas.height = h;
-            }
-          }
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          if (!animating || !canvasW || !canvasH) return;
           const scale = Math.max(
-            canvas.width / img.naturalWidth,
-            canvas.height / img.naturalHeight
+            canvasW / img.naturalWidth,
+            canvasH / img.naturalHeight
           );
           const sw = img.naturalWidth * scale;
           const sh = img.naturalHeight * scale;
-          const sx = (canvas.width - sw) / 2;
-          const sy = (canvas.height - sh) / 2;
+          const sx = (canvasW - sw) / 2;
+          const sy = (canvasH - sh) / 2;
           ctx.drawImage(img, sx, sy, sw, sh);
         };
         img.src = currentFrame;
