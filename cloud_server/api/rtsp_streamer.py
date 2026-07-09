@@ -32,6 +32,7 @@ class RTSPStreamManager:
         self.active_streams = {}
         self._lock = threading.Lock()
         self._loop = asyncio.get_event_loop()
+        self._frame_counters = {}
 
     def start_stream(self, device_id, rtsp_url):
         with self._lock:
@@ -137,7 +138,10 @@ class RTSPStreamManager:
                         }
                     else:
                         context = FrameContext(frame_data=frame, timestamp=time.time(), device_id=device_id)
-                        context = self.pipeline.execute(context)
+                        self._frame_counters[device_id] = self._frame_counters.get(device_id, 0) + 1
+                        fc = self._frame_counters[device_id]
+                        mode = "full" if fc % 15 == 0 else "track"
+                        context = self.pipeline.execute(context, mode=mode)
                         annotated = annotate_frame(frame, context.properties)
                         success, buffer = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
                         if not success:

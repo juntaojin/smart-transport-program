@@ -47,6 +47,7 @@ class ConnectionManager:
 
 dashboard_manager = ConnectionManager()
 active_devices = {}  # Keep track of active streaming devices {device_id: last_seen}
+frame_counters = {}  # Per-device frame counter for key frame strategy
 
 # FPS and throughput calculation helpers
 frame_times = []
@@ -283,8 +284,13 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                 device_id=device_id
             )
             
+            # Key frame strategy: full pipeline every 15 frames, track-only on others
+            frame_counters[device_id] = frame_counters.get(device_id, 0) + 1
+            fc = frame_counters[device_id]
+            mode = "full" if fc % 15 == 0 else "track"
+            
             # Run inference pipeline
-            context = pipeline.execute(context)
+            context = pipeline.execute(context, mode=mode)
             
             # Draw annotations on the frame
             annotated = annotate_frame(frame, context.properties)
