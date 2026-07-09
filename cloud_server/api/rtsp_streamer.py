@@ -92,6 +92,8 @@ class RTSPStreamManager:
 
         logger.info(f"RTSP capture opened: {device_id}")
         reconnect_count = 0
+        last_broadcast_time = 0.0
+        broadcast_interval = 1.0 / 15
 
         try:
             while True:
@@ -113,6 +115,10 @@ class RTSPStreamManager:
 
                 reconnect_count = 0
                 active_devices[device_id] = time.time()
+
+                now = time.time()
+                if now - last_broadcast_time < broadcast_interval:
+                    continue
 
                 try:
                     frame = cv2.resize(frame, (1280, 720))
@@ -176,6 +182,7 @@ class RTSPStreamManager:
                         }
 
                     self._broadcast(payload)
+                    last_broadcast_time = time.time()
 
                 except Exception as e:
                     logger.error(f"RTSP frame processing error for {device_id}: {e}")

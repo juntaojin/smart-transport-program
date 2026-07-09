@@ -239,30 +239,34 @@ async def receive_stream(websocket: WebSocket, device_id: str):
     active_devices[device_id] = time.time()
     
     pipeline = websocket.app.state.pipeline
+    last_broadcast_time = 0.0
+    BROADCAST_INTERVAL = 1.0 / 15  # max 15 fps broadcast
     
     try:
         frame_no = 0
         while True:
-            t_recv = time.time()
-            # Receive binary frame (JPEG)
             data = await websocket.receive_bytes()
             active_devices[device_id] = time.time()
             frame_no += 1
             
-            # Check if any pipeline node is enabled
+            # Frame rate throttle: skip if too soon since last broadcast
+            now = time.time()
+            if now - last_broadcast_time < BROADCAST_INTERVAL:
+                continue
+            
+            t_recv = now
+            
             has_active_nodes = any(node.enabled for node in pipeline.nodes.values())
             has_parking_zones = len(NO_PARKING_ZONES) > 0
             
             if not has_active_nodes and not has_parking_zones:
-                # Fast path: forward raw JPEG without decode-reencode cycle
                 img_b64 = base64.b64encode(data).decode('utf-8')
-                fps = calculate_fps()
                 
                 from cloud_server.utils.system_info import get_detailed_metrics
                 payload = {
                     "device_id": device_id,
                     "timestamp": time.time(),
-                    "fps": fps,
+                    "fps": calculate_fps(),
                     "congestion_level": "low",
                     "image": f"data:image/jpeg;base64,{img_b64}",
                     "vehicles": [],
@@ -271,57 +275,42 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                     "system_metrics": get_detailed_metrics()
                 }
                 t_process = time.time()
-                await dashboard_manager.broadcast(payload)
-                t_broadcast = time.time()
+                asyncio.create_task(dashboard_manager.broadcast(payload))
+                last_broadcast_time = t_process
                 
                 if frame_no % 30 == 0:
-                    psize = len(img_b64) / 1024
                     logger.info(
-                        f"[Timing {device_id}] frame #{frame_no} | "
-                        f"recv→encode: {(t_process-t_recv)*1000:.0f}ms | "
-                        f"broadcast: {(t_broadcast-t_process)*1000:.0f}ms | "
-                        f"total: {(t_broadcast-t_recv)*1000:.0f}ms | "
-                        f"payload img: {psize:.0f}KB"
+                        f"[Timing {device_id}] frame #{frame_no} (fast) | "
+                        f"encode: {(t_process-t_recv)*1000:.0f}ms | "
+                        f"payload img: {len(img_b64)/1024:.0f}KB"
                     )
                 continue
             
-            # Decode JPEG to OpenCV image
+            # Normal path: decode, process, annotate, re-encode
             nparr = np.frombuffer(data, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
             if frame is None:
                 continue
                 
-            # Create computation context
             context = FrameContext(
                 frame_data=frame,
                 timestamp=time.time(),
                 device_id=device_id
             )
             
-            # Key frame strategy: full pipeline every 15 frames, track-only on others
             frame_counters[device_id] = frame_counters.get(device_id, 0) + 1
             fc = frame_counters[device_id]
             mode = "full" if fc % 15 == 0 else "track"
             
-            # Run inference pipeline
             context = pipeline.execute(context, mode=mode)
-            
-            # Draw annotations on the frame
             annotated = annotate_frame(frame, context.properties)
-            
-            # Re-encode to JPEG
             success, buffer = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
             if not success:
                 continue
                 
-            # Base64 encode for simple websocket transport to browser
             img_b64 = base64.b64encode(buffer).decode('utf-8')
-            
-            # Calculate metrics
             fps = calculate_fps()
             
-            # Calculate congestion level based on vehicle count
             v_count = len(context.properties.get("vehicle_boxes", []))
             congestion = "low"
             if v_count > CONGESTION_HIGH:
@@ -329,11 +318,9 @@ async def receive_stream(websocket: WebSocket, device_id: str):
             elif v_count >= CONGESTION_MEDIUM:
                 congestion = "medium"
 
-            # Query real-time hardware metrics
             from cloud_server.utils.system_info import get_detailed_metrics
             sys_metrics = get_detailed_metrics()
 
-            # Construct payload
             payload = {
                 "device_id": device_id,
                 "timestamp": context.timestamp,
@@ -353,26 +340,25 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                 "system_metrics": sys_metrics
             }
             
-            # Save aggregated metrics to DB asynchronously
             asyncio.create_task(save_aggregated_stats(context.properties, device_id))
-            
-            # Broadcast to Dashboard clients
-            await dashboard_manager.broadcast(payload)
+            asyncio.create_task(dashboard_manager.broadcast(payload))
+            last_broadcast_time = time.time()
             
             if fc % 30 == 0:
-                psize = len(img_b64) / 1024
                 logger.info(
                     f"[Timing {device_id}] frame #{fc} mode={mode} | "
-                    f"decode→broadcast: {(time.time()-t_recv)*1000:.0f}ms | "
-                    f"payload img: {psize:.0f}KB"
+                    f"process: {(time.time()-t_recv)*1000:.0f}ms | "
+                    f"payload img: {len(img_b64)/1024:.0f}KB"
                 )
-            
+
     except WebSocketDisconnect:
         logger.info(f"Edge streaming device disconnected: {device_id}")
         active_devices.pop(device_id, None)
+        frame_counters.pop(device_id, None)
     except Exception as e:
         logger.error(f"Error on edge stream WebSocket {device_id}: {e}")
         active_devices.pop(device_id, None)
+        frame_counters.pop(device_id, None)
 
 
 # --- Dashboard WebSocket (Cloud -> Frontend Cockpit) ---
