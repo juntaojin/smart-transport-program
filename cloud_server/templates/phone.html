@@ -207,7 +207,7 @@
     </header>
 
     <div id="preview-container">
-        <video id="video" autoplay playsinline muted loop></video>
+        <video id="video" playsinline muted loop></video>
         <canvas id="canvas"></canvas>
         <span id="fps-display">0 FPS</span>
         <span id="video-file-name"></span>
@@ -450,11 +450,47 @@
         videoFileInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (!file) return;
+            
+            // Check file extension for unsupported formats
+            const ext = (file.name || '').split('.').pop().toLowerCase();
+            if (ext === 'mkv' || ext === 'avi' || ext === 'wmv' || ext === 'flv') {
+                showWarn(`浏览器不支持 ${ext.toUpperCase()} 格式，请转换为 MP4 (H.264编码) 后重试`);
+                videoFileInput.value = '';
+                return;
+            }
+
             stopVideoSource();
+            
+            // Revoke old blob URL
+            if (video.src && video.src.startsWith('blob:')) {
+                URL.revokeObjectURL(video.src);
+            }
+            
+            video.src = '';
+            video.load();
+            
             const url = URL.createObjectURL(file);
             video.src = url;
             video.loop = true;
             video.muted = true;
+            
+            const onError = () => {
+                const err = video.error;
+                let msg = '视频加载失败';
+                if (err) {
+                    const codes = {1: '加载被中止', 2: '网络错误', 3: '解码失败', 4: '格式不支持'};
+                    msg = `视频${codes[err.code] || '错误'} (code=${err.code})`;
+                    if (err.message) msg += ': ' + err.message;
+                }
+                msg += '。请使用 H.264 编码的 MP4 文件。';
+                showWarn(msg);
+                videoFileLoaded = false;
+                btnStart.disabled = true;
+                btnStart.textContent = '请先选择视频文件';
+            };
+            
+            video.onerror = onError;
+            
             video.play().then(() => {
                 videoFileLoaded = true;
                 btnStart.disabled = false;
@@ -463,10 +499,7 @@
                 videoFileName.textContent = file.name;
                 videoFileName.style.display = 'block';
             }).catch(err => {
-                showWarn('视频加载失败: ' + err.message);
-                videoFileLoaded = false;
-                btnStart.disabled = true;
-                btnStart.textContent = '请先选择视频文件';
+                onError();
             });
         });
 
