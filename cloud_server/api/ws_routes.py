@@ -241,10 +241,13 @@ async def receive_stream(websocket: WebSocket, device_id: str):
     pipeline = websocket.app.state.pipeline
     
     try:
+        frame_no = 0
         while True:
+            t_recv = time.time()
             # Receive binary frame (JPEG)
             data = await websocket.receive_bytes()
             active_devices[device_id] = time.time()
+            frame_no += 1
             
             # Check if any pipeline node is enabled
             has_active_nodes = any(node.enabled for node in pipeline.nodes.values())
@@ -267,7 +270,19 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                     "anomalies": [],
                     "system_metrics": get_detailed_metrics()
                 }
+                t_process = time.time()
                 await dashboard_manager.broadcast(payload)
+                t_broadcast = time.time()
+                
+                if frame_no % 30 == 0:
+                    psize = len(img_b64) / 1024
+                    logger.info(
+                        f"[Timing {device_id}] frame #{frame_no} | "
+                        f"recv→encode: {(t_process-t_recv)*1000:.0f}ms | "
+                        f"broadcast: {(t_broadcast-t_process)*1000:.0f}ms | "
+                        f"total: {(t_broadcast-t_recv)*1000:.0f}ms | "
+                        f"payload img: {psize:.0f}KB"
+                    )
                 continue
             
             # Decode JPEG to OpenCV image
@@ -343,6 +358,14 @@ async def receive_stream(websocket: WebSocket, device_id: str):
             
             # Broadcast to Dashboard clients
             await dashboard_manager.broadcast(payload)
+            
+            if fc % 30 == 0:
+                psize = len(img_b64) / 1024
+                logger.info(
+                    f"[Timing {device_id}] frame #{fc} mode={mode} | "
+                    f"decode→broadcast: {(time.time()-t_recv)*1000:.0f}ms | "
+                    f"payload img: {psize:.0f}KB"
+                )
             
     except WebSocketDisconnect:
         logger.info(f"Edge streaming device disconnected: {device_id}")
