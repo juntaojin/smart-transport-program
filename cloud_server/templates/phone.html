@@ -644,8 +644,19 @@
             switchMode(sourceMode);
         }
 
+        let lastCaptureTime = 0;
+        const CAPTURE_INTERVAL = 1000 / 15;  // max 15 fps capture
+
         function captureAndSend() {
             if (!streaming) return;
+            
+            const now = performance.now();
+            if (now - lastCaptureTime < CAPTURE_INTERVAL) {
+                frameTimer = requestAnimationFrame(captureAndSend);
+                return;
+            }
+            lastCaptureTime = now;
+
             if (video.readyState >= video.HAVE_CURRENT_DATA) {
                 const vw = video.videoWidth;
                 const vh = video.videoHeight;
@@ -663,11 +674,11 @@
                                 frameSent++;
                                 infoSent.textContent = frameSent;
                                 fpsFrames++;
-                                const now = performance.now();
-                                if (now - lastFpsTime >= 1000) {
-                                    fpsDisplay.textContent = `${Math.round(fpsFrames / ((now - lastFpsTime) / 1000))} FPS`;
+                                const tnow = performance.now();
+                                if (tnow - lastFpsTime >= 1000) {
+                                    fpsDisplay.textContent = `${Math.round(fpsFrames / ((tnow - lastFpsTime) / 1000))} FPS`;
                                     fpsFrames = 0;
-                                    lastFpsTime = now;
+                                    lastFpsTime = tnow;
                                 }
                             });
                         }
