@@ -1,0 +1,149 @@
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from loguru import logger
+import uvicorn
+import torch
+import os
+
+from cloud_server.database.connection import engine, Base
+from cloud_server.api.middleware import setup_middleware
+from cloud_server.api.rest_routes import router as rest_router
+from cloud_server.api.ws_routes import router as ws_router
+
+# Import Pipeline and Nodes
+from cloud_server.pipeline.engine import InferencePipeline
+from cloud_server.pipeline.nodes.detection_node import VehicleDetectionNode
+from cloud_server.pipeline.nodes.tracking_node import TrackingNode
+from cloud_server.pipeline.nodes.ocr_node import PlateRecognitionNode
+from cloud_server.pipeline.nodes.anomaly_node import AnomalyDetectionNode
+from cloud_server.pipeline.nodes.violation_node import ViolationDetectionNode
+from cloud_server.config import YOLO_MODEL_PATH, YOLO_CONFIDENCE, YOLO_IOU, YOLO_IMGSZ
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("=" * 60)
+    logger.info("Environment Info:")
+    logger.info(f"  PyTorch version: {torch.__version__}")
+    logger.info(f"  CUDA compiled: {torch.version.cuda}")
+    logger.info(f"  CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        logger.info(f"  CUDA device count: {torch.cuda.device_count()}")
+        logger.info(f"  CUDA device: {torch.cuda.get_device_name(0)}")
+        logger.info(f"  CUDA memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    else:
+        logger.warning("  CUDA NOT AVAILABLE - all models will run on CPU")
+        logger.warning("  Check: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118")
+    logger.info(f"  YOLO model path: {YOLO_MODEL_PATH}")
+    logger.info(f"  YOLO model exists: {os.path.exists(YOLO_MODEL_PATH)}")
+    logger.info(f"  YOLO config: conf={YOLO_CONFIDENCE}, iou={YOLO_IOU}, imgsz={YOLO_IMGSZ}")
+    logger.info("=" * 60)
+
+    # 1. Initialize SQLite Database Tables
+    logger.info("Initializing database tables...")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Database tables initialized successfully.")
+
+    # 2. Build and Configure the AI Inference Pipeline
+    logger.info("Assembling inference pipeline...")
+    pipeline = InferencePipeline()
+    pipeline.add_node(VehicleDetectionNode())
+    pipeline.add_node(TrackingNode())
+    pipeline.add_node(PlateRecognitionNode())
+    pipeline.add_node(AnomalyDetectionNode())
+    pipeline.add_node(ViolationDetectionNode())
+
+    # All nodes start disabled by default — enable via frontend or API
+    app.state.pipeline = pipeline
+    registered = list(pipeline.nodes.keys())
+    logger.info(f"Pipeline nodes registered: {registered}")
+    logger.info("Pipeline initialized with all nodes disabled by default.")
+    logger.info("Use /api/configs/models to enable nodes dynamically.")
+
+    # 3. Initialize RTSP stream manager
+    from cloud_server.api.rtsp_streamer import RTSPStreamManager
+    app.state.rtsp_manager = RTSPStreamManager(pipeline)
+    logger.info("RTSP stream manager initialized.")
+
+    yield
+
+    # 4. Clean up on shutdown
+    logger.info("Application shutting down. Releasing model resources...")
+    for name, node in pipeline.nodes.items():
+        try:
+            node.unload_model()
+        except Exception as e:
+            logger.error(f"Error unloading node '{name}': {e}")
+    logger.info("Models successfully unloaded.")
+
+
+# Create FastAPI App
+app = FastAPI(
+    title="Intelligent Transportation System Cloud Server",
+    description="FastAPI Backend for Real-time Video Stream Reception, AI Pipeline Processing, and REST Control",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Setup Middlewares (CORS)
+setup_middleware(app)
+
+# Include Routers
+app.include_router(rest_router)
+app.include_router(ws_router)
+
+# Route to serve the mobile phone camera stream client webpage
+from fastapi.responses import HTMLResponse
+import os
+
+@app.get("/phone", response_class=HTMLResponse)
+async def get_phone_stream_page():
+    from cloud_server.config import BASE_DIR
+    template_path = os.path.join(BASE_DIR, "cloud_server", "templates", "phone.html")
+    try:
+        with open(template_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
+    except Exception as e:
+        logger.error(f"Failed to read phone template: {e}")
+        return HTMLResponse(content="<h1>Internal Server Error: Missing phone.html template</h1>", status_code=500)
+
+if __name__ == "__main__":
+    import os
+    from cloud_server.config import HOST, PORT, ENABLE_SSL, BASE_DIR
+    
+    ssl_keyfile = None
+    ssl_certfile = None
+    
+    if ENABLE_SSL:
+        cert_dir = os.path.join(BASE_DIR, "certs")
+        ssl_certfile = os.path.join(cert_dir, "cert.pem")
+        ssl_keyfile = os.path.join(cert_dir, "key.pem")
+        
+        if not (os.path.exists(ssl_certfile) and os.path.exists(ssl_keyfile)):
+            os.makedirs(cert_dir, exist_ok=True)
+            logger.info("Generating self-signed SSL certificates for HTTPS/WSS...")
+            try:
+                import subprocess
+                subprocess.run([
+                    "openssl", "req", "-x509", "-newkey", "rsa:2048",
+                    "-keyout", ssl_keyfile, "-out", ssl_certfile,
+                    "-days", "365", "-nodes",
+                    "-subj", "/CN=localhost",
+                    "-addext", "subjectAltName=IP:127.0.0.1",
+                ], check=True, capture_output=True)
+                logger.info("Certificates generated successfully.")
+            except Exception as e:
+                logger.error(f"Failed to generate self-signed certificates via openssl: {e}")
+                logger.warning("SSL will be disabled. Running backend in standard HTTP mode.")
+                ssl_certfile = None
+                ssl_keyfile = None
+                
+    uvicorn.run(
+        "cloud_server.main:app",
+        host=HOST,
+        port=PORT,
+        reload=False,
+        ssl_keyfile=ssl_keyfile,
+        ssl_certfile=ssl_certfile
+    )

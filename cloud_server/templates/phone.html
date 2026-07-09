@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>智慧交通 - 视频推流终端</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #090d16;
+            color: #eee;
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        header {
+            background: #0f172a;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            z-index: 10;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        header h1 { font-size: 16px; font-weight: 600; color: #38bdf8; }
+        .status {
+            font-size: 12px;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-weight: 600;
+        }
+        .status.disconnected { background: #ef4444; color: #fff; }
+        .status.connecting { background: #f59e0b; color: #000; }
+        .status.connected { background: #10b981; color: #fff; }
+
+        #preview-container {
+            flex: 1;
+            position: relative;
+            background: #020617;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        video, canvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        canvas { position: absolute; }
+        #fps-display {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            font-size: 11px;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(4px);
+            padding: 4px 8px;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.1);
+            z-index: 5;
+            color: #38bdf8;
+        }
+        #video-file-name {
+            position: absolute;
+            bottom: 12px;
+            left: 12px;
+            font-size: 11px;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(4px);
+            padding: 4px 8px;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.1);
+            z-index: 5;
+            color: #94a3b8;
+            max-width: 60%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            display: none;
+        }
+
+        .controls {
+            background: #0f172a;
+            padding: 16px;
+            border-top: 1px solid rgba(255,255,255,0.05);
+        }
+        .config-row {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 12px;
+            align-items: center;
+        }
+        .config-row label {
+            font-size: 13px;
+            color: #94a3b8;
+            white-space: nowrap;
+            min-width: 60px;
+        }
+        .config-row input, .config-row select {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            background: #1e293b;
+            color: #f1f5f9;
+            font-size: 14px;
+            outline: none;
+        }
+        .config-row input:focus, .config-row select:focus {
+            border-color: #38bdf8;
+        }
+        .hint {
+            font-size: 11px;
+            color: #64748b;
+            margin-top: -6px;
+            margin-bottom: 12px;
+            padding-left: 72px;
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 8px;
+        }
+        #btn-start {
+            background: #38bdf8;
+            color: #0f172a;
+        }
+        #btn-start:active { background: #0284c7; }
+        #btn-start:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
+        #btn-stop {
+            background: #ef4444;
+            color: #fff;
+            display: none;
+        }
+        #btn-stop:active { background: #dc2626; }
+        #btn-permission {
+            background: #4f46e5;
+            color: #fff;
+            display: none;
+        }
+        #btn-pick-video {
+            background: #1e293b;
+            color: #94a3b8;
+            border: 1px dashed rgba(255,255,255,0.15);
+            font-size: 14px;
+            padding: 10px;
+            display: none;
+        }
+        #btn-pick-video:active { background: #334155; }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 4px;
+        }
+        .warn {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid #ef4444;
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-size: 12px;
+            color: #fca5a5;
+            margin-bottom: 12px;
+            display: none;
+            word-break: break-all;
+        }
+        .mode-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .mode-tab {
+            flex: 1;
+            padding: 8px;
+            background: #1e293b;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 8px;
+            color: #94a3b8;
+            font-size: 13px;
+            font-weight: 600;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .mode-tab.active {
+            background: rgba(56, 189, 248, 0.15);
+            border-color: #38bdf8;
+            color: #38bdf8;
+        }
+        #video-file { display: none; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>视频推流终端</h1>
+        <span id="status" class="status disconnected">未连接</span>
+    </header>
+
+    <div id="preview-container">
+        <video id="video" autoplay playsinline muted loop></video>
+        <canvas id="canvas"></canvas>
+        <span id="fps-display">0 FPS</span>
+        <span id="video-file-name"></span>
+    </div>
+
+    <div class="controls">
+        <div class="warn" id="warn-msg"></div>
+
+        <div class="mode-tabs">
+            <div class="mode-tab active" data-mode="camera" id="tab-camera">摄像头</div>
+            <div class="mode-tab" data-mode="video-file" id="tab-video-file">本地视频</div>
+            <div class="mode-tab" data-mode="rtsp" id="tab-rtsp">沙盘摄像头</div>
+        </div>
+
+        <div class="config-row">
+            <label for="server-addr">服务器</label>
+            <input id="server-addr" type="text" placeholder="如: 10.217.55.162:8000" inputmode="url" autocomplete="off">
+        </div>
+
+        <div class="config-row">
+            <label for="device-id">通道编号</label>
+            <input id="device-id" type="text" value="cam_01" placeholder="如: cam_01, cam_02">
+        </div>
+        <div class="hint">页面地址与推送终点已自动适配，通常无需手动修改</div>
+
+        <div id="camera-controls">
+            <div class="config-row">
+                <label for="camera-select">摄像头</label>
+                <select id="camera-select"><option value="">请先授权摄像头</option></select>
+            </div>
+            <div class="config-row">
+                <label for="quality">图像质量</label>
+                <select id="quality">
+                    <option value="0.7">高 (0.7)</option>
+                    <option value="0.5" selected>中 (0.5)</option>
+                    <option value="0.3">低 (0.3)</option>
+                </select>
+            </div>
+        </div>
+
+        <div id="video-file-controls" style="display:none;">
+            <div class="config-row">
+                <label for="quality-video">图像质量</label>
+                <select id="quality-video">
+                    <option value="0.7">高 (0.7)</option>
+                    <option value="0.5" selected>中 (0.5)</option>
+                    <option value="0.3">低 (0.3)</option>
+                </select>
+            </div>
+            <button id="btn-pick-video">选择本地视频文件</button>
+            <input type="file" id="video-file" accept="video/*">
+        </div>
+
+        <div id="rtsp-controls" style="display:none;">
+            <div class="config-row">
+                <label for="rtsp-camera-select">沙盘摄像头</label>
+                <select id="rtsp-camera-select">
+                    <option value="live1">live1 - 桥面</option>
+                    <option value="live2">live2 - 停车场出口</option>
+                    <option value="live3">live3 - 行人检测</option>
+                    <option value="live4">live4 - 消防车识别</option>
+                    <option value="live5">live5 - 桥出口</option>
+                    <option value="live6">live6 - 桥入口</option>
+                    <option value="live7">live7 - 道路2</option>
+                    <option value="live8">live8 - 隧道(事故识别)</option>
+                    <option value="live9">live9 - 隧道(车辆数量)</option>
+                    <option value="live10">live10 - 道路3</option>
+                    <option value="live11">live11 - 停车场入口</option>
+                    <option value="live12">live12 - 道路1</option>
+                </select>
+            </div>
+            <div class="hint">沙盘摄像头由云端服务器直接拉取RTSP流，无需手机摄像头</div>
+        </div>
+
+        <button id="btn-permission">授予摄像头权限</button>
+        <button id="btn-start" disabled>请先授予摄像头权限</button>
+        <button id="btn-stop">停止推流</button>
+        <div class="info-row">
+            <span>分辨率: <span id="info-res" style="color: #f1f5f9;">-</span></span>
+            <span>已发送: <span id="info-sent" style="color: #38bdf8; font-weight: bold;">0</span> 帧</span>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const fpsDisplay = document.getElementById('fps-display');
+        const videoFileName = document.getElementById('video-file-name');
+        const statusEl = document.getElementById('status');
+        const btnStart = document.getElementById('btn-start');
+        const btnStop = document.getElementById('btn-stop');
+        const btnPerm = document.getElementById('btn-permission');
+        const btnPickVideo = document.getElementById('btn-pick-video');
+        const serverAddr = document.getElementById('server-addr');
+        const deviceIdInput = document.getElementById('device-id');
+        const cameraSelect = document.getElementById('camera-select');
+        const qualitySelect = document.getElementById('quality');
+        const qualityVideoSelect = document.getElementById('quality-video');
+        const infoRes = document.getElementById('info-res');
+        const infoSent = document.getElementById('info-sent');
+        const warnMsg = document.getElementById('warn-msg');
+        const videoFileInput = document.getElementById('video-file');
+        const cameraControls = document.getElementById('camera-controls');
+        const videoFileControls = document.getElementById('video-file-controls');
+        const rtspControls = document.getElementById('rtsp-controls');
+        const rtspCameraSelect = document.getElementById('rtsp-camera-select');
+
+        let ws = null;
+        let stream = null;
+        let streaming = false;
+        let frameTimer = null;
+        let frameSent = 0;
+        let fpsFrames = 0;
+        let lastFpsTime = performance.now();
+        let hasPermission = false;
+        let sourceMode = 'camera';
+        let videoFileLoaded = false;
+
+        function switchMode(mode) {
+            sourceMode = mode;
+            document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('tab-' + (mode === 'video-file' ? 'video-file' : mode)).classList.add('active');
+
+            cameraControls.style.display = 'none';
+            videoFileControls.style.display = 'none';
+            rtspControls.style.display = 'none';
+            btnPickVideo.style.display = 'none';
+            btnPerm.style.display = 'none';
+            video.style.display = '';
+            canvas.style.display = '';
+
+            if (mode === 'camera') {
+                cameraControls.style.display = '';
+                btnStart.disabled = !hasPermission;
+                btnStart.textContent = hasPermission ? '开始推流' : '请先授予摄像头权限';
+                if (!hasPermission) btnPerm.style.display = 'block';
+            } else if (mode === 'video-file') {
+                videoFileControls.style.display = '';
+                btnPickVideo.style.display = 'block';
+                btnStart.disabled = !videoFileLoaded;
+                btnStart.textContent = videoFileLoaded ? '开始推流' : '请先选择视频文件';
+            } else if (mode === 'rtsp') {
+                rtspControls.style.display = '';
+                btnStart.disabled = false;
+                btnStart.textContent = '启动沙盘摄像头推流';
+                video.style.display = 'none';
+                canvas.style.display = 'none';
+            }
+        }
+
+        document.getElementById('tab-camera').addEventListener('click', () => switchMode('camera'));
+        document.getElementById('tab-video-file').addEventListener('click', () => switchMode('video-file'));
+        document.getElementById('tab-rtsp').addEventListener('click', () => switchMode('rtsp'));
+
+        function autoFillServer() {
+            const savedAddr = localStorage.getItem('ws_server_addr');
+            const savedDevice = localStorage.getItem('ws_device_id');
+            if (savedAddr) { serverAddr.value = savedAddr; }
+            else { serverAddr.value = window.location.host; }
+            if (savedDevice) { deviceIdInput.value = savedDevice; }
+        }
+        autoFillServer();
+
+        function getWSUrl() {
+            const addr = serverAddr.value.trim();
+            const deviceId = deviceIdInput.value.trim() || 'cam_01';
+            if (!addr) return '';
+            const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            return `${proto}://${addr}/ws/stream/${deviceId}`;
+        }
+
+        function getQuality() {
+            if (sourceMode === 'camera') return parseFloat(qualitySelect.value);
+            return parseFloat(qualityVideoSelect.value);
+        }
+
+        // ── 摄像头 ──
+        async function requestCameraPermission() {
+            warnMsg.style.display = 'none';
+            try {
+                const testStream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment' },
+                    audio: false
+                });
+                testStream.getTracks().forEach(t => t.stop());
+                hasPermission = true;
+                btnPerm.style.display = 'none';
+                btnStart.disabled = false;
+                btnStart.textContent = '开始推流';
+                await loadCameras();
+            } catch (e) {
+                console.error('获取摄像头失败:', e);
+                hasPermission = false;
+                btnStart.disabled = true;
+                btnStart.textContent = '请先授予摄像头权限';
+                btnPerm.style.display = 'block';
+                const errorMessages = {
+                    NotAllowedError: '摄像头权限被拒绝。请在浏览器地址栏左侧解锁摄像头权限，然后重试。',
+                    NotFoundError: '未检测到可用摄像头设备。',
+                    NotReadableError: '摄像头正被其他应用占用，请关闭后台视频应用。',
+                    OverconstrainedError: '无法匹配所需参数。',
+                };
+                warnMsg.innerHTML = errorMessages[e.name] || `摄像头初始化失败 (${e.name}): ${e.message}`;
+                warnMsg.style.display = 'block';
+            }
+        }
+
+        async function loadCameras() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(d => d.kind === 'videoinput');
+                cameraSelect.innerHTML = '';
+                if (videoDevices.length === 0) {
+                    cameraSelect.innerHTML = '<option value="">未检测到摄像头</option>';
+                    return;
+                }
+                videoDevices.forEach((d, i) => {
+                    let label = d.label || `摄像头 ${i + 1}`;
+                    if (!d.label && i === 0) label = '后置主摄像头';
+                    if (!d.label && i === 1) label = '前置自拍摄像头';
+                    cameraSelect.innerHTML += `<option value="${d.deviceId}">${label}</option>`;
+                });
+                cameraSelect.selectedIndex = 0;
+            } catch (e) {
+                cameraSelect.innerHTML = '<option value="">加载摄像头故障</option>';
+            }
+        }
+
+        btnPerm.addEventListener('click', requestCameraPermission);
+        requestCameraPermission();
+
+        navigator.mediaDevices?.addEventListener('devicechange', () => {
+            if (hasPermission) loadCameras();
+        });
+
+        // ── 本地视频文件 ──
+        btnPickVideo.addEventListener('click', () => videoFileInput.click());
+
+        videoFileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            stopVideoSource();
+            const url = URL.createObjectURL(file);
+            video.src = url;
+            video.loop = true;
+            video.muted = true;
+            video.play().then(() => {
+                videoFileLoaded = true;
+                btnStart.disabled = false;
+                btnStart.textContent = '开始推流';
+                updateVideoResolution();
+                videoFileName.textContent = file.name;
+                videoFileName.style.display = 'block';
+            }).catch(err => {
+                showWarn('视频加载失败: ' + err.message);
+                videoFileLoaded = false;
+                btnStart.disabled = true;
+                btnStart.textContent = '请先选择视频文件';
+            });
+        });
+
+        function updateVideoResolution() {
+            if (video.videoWidth && video.videoHeight) {
+                infoRes.textContent = `${video.videoWidth}x${video.videoHeight}`;
+            }
+        }
+        video.addEventListener('loadedmetadata', updateVideoResolution);
+
+        // ── 视频源管理 ──
+        async function startVideoSource() {
+            if (sourceMode === 'camera') {
+                if (stream) stopVideoSource();
+                const devId = cameraSelect.value;
+                const constraints = {
+                    video: devId ? { deviceId: { exact: devId } } : { facingMode: { ideal: 'environment' } },
+                    audio: false
+                };
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+                await video.play();
+                const trackSettings = stream.getVideoTracks()[0].getSettings();
+                infoRes.textContent = `${trackSettings.width}x${trackSettings.height}`;
+            } else {
+                if (!videoFileLoaded) throw new Error('未选择视频文件');
+                video.currentTime = 0;
+                await video.play();
+                updateVideoResolution();
+            }
+        }
+
+        function stopVideoSource() {
+            if (stream) {
+                stream.getTracks().forEach(t => t.stop());
+                stream = null;
+            }
+            if (sourceMode === 'video-file') {
+                video.pause();
+            } else {
+                video.srcObject = null;
+            }
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            fpsDisplay.textContent = '0 FPS';
+        }
+
+        // ── WebSocket ──
+        function connectWS() {
+            const addr = serverAddr.value.trim();
+            const deviceId = deviceIdInput.value.trim() || 'cam_01';
+            if (!addr) { showWarn('请输入服务器地址'); return; }
+            localStorage.setItem('ws_server_addr', addr);
+            localStorage.setItem('ws_device_id', deviceId);
+            const url = getWSUrl();
+            if (!url) return;
+            setStatus('connecting', '连接中...');
+            warnMsg.style.display = 'none';
+            ws = new WebSocket(url);
+            ws.binaryType = 'arraybuffer';
+            ws.onopen = () => {
+                setStatus('connected', '已连接');
+                startStreaming();
+            };
+            ws.onclose = () => {
+                setStatus('disconnected', '未连接');
+                stopStreaming();
+            };
+            ws.onerror = () => {
+                showWarn(
+                    `连接失败: 无法建立与 ${url} 的连接。<br><br>` +
+                    `排查建议：<br>` +
+                    `1. 云端服务正在运行，且绑定的 IP 可以被外网访问。<br>` +
+                    `2. 若启用 HTTPS，手机浏览器需信任自签名证书（在手机浏览器中先访问 https://${addr} 并点击继续访问）。`
+                );
+                disconnectWS();
+            };
+        }
+
+        function disconnectWS() {
+            if (ws) {
+                ws.onclose = null;
+                ws.onerror = null;
+                ws.close();
+                ws = null;
+            }
+            setStatus('disconnected', '未连接');
+        }
+
+        function setStatus(state, text) {
+            statusEl.textContent = text;
+            statusEl.className = `status ${state}`;
+        }
+
+        function showWarn(msg) {
+            warnMsg.innerHTML = msg;
+            warnMsg.style.display = 'block';
+        }
+
+        // ── 推流 ──
+        async function startStreaming() {
+            if (streaming) return;
+            try {
+                await startVideoSource();
+            } catch (e) {
+                showWarn('视频源启动失败: ' + e.message);
+                disconnectWS();
+                return;
+            }
+            streaming = true;
+            btnStart.style.display = 'none';
+            btnStop.style.display = 'block';
+            btnPerm.style.display = 'none';
+            btnPickVideo.style.display = 'none';
+            serverAddr.disabled = true;
+            deviceIdInput.disabled = true;
+            cameraSelect.disabled = true;
+            qualitySelect.disabled = true;
+            qualityVideoSelect.disabled = true;
+            document.querySelectorAll('.mode-tab').forEach(t => t.style.pointerEvents = 'none');
+
+            frameSent = 0;
+            fpsFrames = 0;
+            lastFpsTime = performance.now();
+            infoSent.textContent = '0';
+            captureAndSend();
+        }
+
+        function stopStreaming() {
+            streaming = false;
+            if (frameTimer) cancelAnimationFrame(frameTimer);
+            btnStart.style.display = 'block';
+            btnStop.style.display = 'none';
+            if (sourceMode === 'camera' && !hasPermission) btnPerm.style.display = 'block';
+            if (sourceMode === 'video-file') btnPickVideo.style.display = 'block';
+            serverAddr.disabled = false;
+            deviceIdInput.disabled = false;
+            cameraSelect.disabled = false;
+            qualitySelect.disabled = false;
+            qualityVideoSelect.disabled = false;
+            document.querySelectorAll('.mode-tab').forEach(t => t.style.pointerEvents = '');
+            stopVideoSource();
+            switchMode(sourceMode);
+        }
+
+        function captureAndSend() {
+            if (!streaming) return;
+            if (video.readyState >= video.HAVE_CURRENT_DATA) {
+                const vw = video.videoWidth;
+                const vh = video.videoHeight;
+                if (vw && vh && (canvas.width !== vw || canvas.height !== vh)) {
+                    canvas.width = vw;
+                    canvas.height = vh;
+                }
+                if (vw && vh) {
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    const quality = getQuality();
+                    canvas.toBlob(blob => {
+                        if (blob && ws && ws.readyState === WebSocket.OPEN) {
+                            blob.arrayBuffer().then(buf => {
+                                ws.send(buf);
+                                frameSent++;
+                                infoSent.textContent = frameSent;
+                                fpsFrames++;
+                                const now = performance.now();
+                                if (now - lastFpsTime >= 1000) {
+                                    fpsDisplay.textContent = `${Math.round(fpsFrames / ((now - lastFpsTime) / 1000))} FPS`;
+                                    fpsFrames = 0;
+                                    lastFpsTime = now;
+                                }
+                            });
+                        }
+                    }, 'image/jpeg', quality);
+                }
+            }
+            frameTimer = requestAnimationFrame(captureAndSend);
+        }
+
+        // ── RTSP 沙盘摄像头 (服务端拉流) ──
+        function getApiBase() {
+            const addr = serverAddr.value.trim();
+            if (!addr) return '';
+            const proto = window.location.protocol === 'https:' ? 'https' : 'http';
+            return `${proto}://${addr}`;
+        }
+
+        async function startRtspStream() {
+            const cameraId = rtspCameraSelect.value;
+            const apiBase = getApiBase();
+            if (!apiBase) { showWarn('请输入服务器地址'); return; }
+
+            warnMsg.style.display = 'none';
+            setStatus('connecting', '启动中...');
+
+            try {
+                const resp = await fetch(`${apiBase}/api/stream/rtsp/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ camera_id: cameraId })
+                });
+                const result = await resp.json();
+                if (result.code === 200) {
+                    setStatus('connected', '沙盘推流中');
+                    streaming = true;
+                    btnStart.style.display = 'none';
+                    btnStop.style.display = 'block';
+                    btnPerm.style.display = 'none';
+                    btnPickVideo.style.display = 'none';
+                    serverAddr.disabled = true;
+                    deviceIdInput.disabled = true;
+                    rtspCameraSelect.disabled = true;
+                    document.querySelectorAll('.mode-tab').forEach(t => t.style.pointerEvents = 'none');
+                    infoRes.textContent = cameraId;
+                    infoSent.textContent = 'RTSP';
+                    fpsDisplay.textContent = '服务器拉流';
+                } else if (result.code === 409) {
+                    showWarn('该摄像头已在推流中，请先停止');
+                    setStatus('disconnected', '未连接');
+                } else {
+                    showWarn('启动失败: ' + result.message);
+                    setStatus('disconnected', '未连接');
+                }
+            } catch (e) {
+                showWarn('请求失败，请确认云端服务器可访问: ' + e.message);
+                setStatus('disconnected', '未连接');
+            }
+        }
+
+        async function stopRtspStream() {
+            const cameraId = rtspCameraSelect.value;
+            const apiBase = getApiBase();
+            if (apiBase) {
+                try {
+                    await fetch(`${apiBase}/api/stream/rtsp/stop`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ camera_id: cameraId })
+                    });
+                } catch (e) {
+                    console.error('RTSP stop error:', e);
+                }
+            }
+
+            streaming = false;
+            if (frameTimer) cancelAnimationFrame(frameTimer);
+            setStatus('disconnected', '未连接');
+            btnStart.style.display = 'block';
+            btnStop.style.display = 'none';
+            serverAddr.disabled = false;
+            deviceIdInput.disabled = false;
+            rtspCameraSelect.disabled = false;
+            document.querySelectorAll('.mode-tab').forEach(t => t.style.pointerEvents = '');
+            infoRes.textContent = '-';
+            infoSent.textContent = '0';
+            fpsDisplay.textContent = '0 FPS';
+        }
+
+        btnStart.addEventListener('click', () => {
+            if (sourceMode === 'rtsp') { startRtspStream(); return; }
+            if (sourceMode === 'camera' && !hasPermission) { requestCameraPermission(); return; }
+            if (sourceMode === 'video-file' && !videoFileLoaded) { btnPickVideo.click(); return; }
+            if (!serverAddr.value.trim()) { showWarn('请输入服务器地址'); return; }
+            connectWS();
+        });
+
+        btnStop.addEventListener('click', () => {
+            if (sourceMode === 'rtsp') { stopRtspStream(); return; }
+            disconnectWS();
+            stopStreaming();
+        });
+
+        window.addEventListener('beforeunload', () => {
+            disconnectWS();
+            stopVideoSource();
+        });
+    </script>
+</body>
+</html>
