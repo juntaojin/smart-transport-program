@@ -1,8 +1,17 @@
+"""Smart Transport Cloud Server - Entry Point"""
+import os
+import sys
+
+# ===== GPU DLL PATH: ensure onnxruntime CUDA providers find torch CUDA 12 DLLs =====
+# Must be set before ANY imports that load onnxruntime or hyperlpr3.
+_torch_lib = os.path.join(sys.prefix, 'Lib', 'site-packages', 'torch', 'lib')
+if os.path.isdir(_torch_lib):
+    os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from loguru import logger
 import uvicorn
-import os
 
 from cloud_server.database.connection import engine, Base
 from cloud_server.api.middleware import setup_middleware

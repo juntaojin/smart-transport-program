@@ -1,3 +1,11 @@
+import os
+import sys
+
+# Ensure onnxruntime CUDA providers can find torch CUDA 12 DLLs
+_torch_lib = os.path.join(sys.prefix, 'Lib', 'site-packages', 'torch', 'lib')
+if os.path.isdir(_torch_lib):
+    os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
+
 import cv2
 import numpy as np
 import hyperlpr3 as lpr3
