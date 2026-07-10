@@ -13,7 +13,8 @@ defaults = {
         "port": 8000,
         "enable_ssl": False,
         "database": {"path": "data/its.db"},
-        "video": {"width": 1280, "height": 720, "fps": 15, "jpeg_quality": 80},
+        "video": {"width": 1280, "height": 720, "fps": 15, "jpeg_quality": 80,
+                   "capture_fps": 20, "stream_broadcast_fps": 15, "rtsp_broadcast_fps": 20},
         "models": {
             "yolo_model_path": "models/yolo26n.pt",
             "yolo_confidence": 0.25,
@@ -75,6 +76,9 @@ VIDEO_FRAME_WIDTH = c_server["video"]["width"]
 VIDEO_FRAME_HEIGHT = c_server["video"]["height"]
 VIDEO_FPS = c_server["video"]["fps"]
 JPEG_QUALITY = c_server["video"].get("jpeg_quality", 50)
+CAPTURE_FPS = c_server["video"].get("capture_fps", 20)
+STREAM_BROADCAST_FPS = c_server["video"].get("stream_broadcast_fps", 15)
+RTSP_BROADCAST_FPS = c_server["video"].get("rtsp_broadcast_fps", 20)
 
 # AI Model Config
 model_path = c_server["models"]["yolo_model_path"]

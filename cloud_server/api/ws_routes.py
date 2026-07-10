@@ -16,7 +16,8 @@ from cloud_server.database.orm_models import (
     PlateRecord, VehicleStat, ParkingViolation, RoadAnomaly, SystemMetric
 )
 from cloud_server.config import (
-    VIDEO_FPS, CONGESTION_HIGH, CONGESTION_MEDIUM, CONGESTION_LOW, NO_PARKING_ZONES, JPEG_QUALITY
+    VIDEO_FPS, CONGESTION_HIGH, CONGESTION_MEDIUM, CONGESTION_LOW, NO_PARKING_ZONES, JPEG_QUALITY,
+    STREAM_BROADCAST_FPS,
 )
 
 router = APIRouter(prefix="/ws")
@@ -274,7 +275,7 @@ async def receive_stream(websocket: WebSocket, device_id: str):
     
     pipeline = websocket.app.state.pipeline
     last_broadcast_time = 0.0
-    BROADCAST_INTERVAL = 1.0 / 10  # max 10 fps broadcast
+    BROADCAST_INTERVAL = 1.0 / STREAM_BROADCAST_FPS
     
     try:
         frame_no = 0

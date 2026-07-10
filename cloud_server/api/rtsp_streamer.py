@@ -8,7 +8,7 @@ from loguru import logger
 
 from cloud_server.pipeline.context import FrameContext
 from cloud_server.api.ws_routes import dashboard_manager, calculate_fps, annotate_frame, active_devices
-from cloud_server.config import CONGESTION_HIGH, CONGESTION_MEDIUM, NO_PARKING_ZONES, JPEG_QUALITY
+from cloud_server.config import CONGESTION_HIGH, CONGESTION_MEDIUM, NO_PARKING_ZONES, JPEG_QUALITY, RTSP_BROADCAST_FPS
 
 SAND_TABLE_CAMERAS = [
     {"id": "live1", "name": "桥面", "url": "rtsp://10.126.59.120:8554/live/live1"},
@@ -94,7 +94,7 @@ class RTSPStreamManager:
         logger.info(f"RTSP capture opened: {device_id}")
         reconnect_count = 0
         last_broadcast_time = 0.0
-        broadcast_interval = 1.0 / 15
+        broadcast_interval = 1.0 / RTSP_BROADCAST_FPS
 
         try:
             while True:

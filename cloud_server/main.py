@@ -97,9 +97,12 @@ from fastapi.responses import HTMLResponse
 
 @app.get("/phone", response_class=HTMLResponse)
 async def get_phone_stream_page():
-    from cloud_server.config import BASE_DIR
+    from cloud_server.config import BASE_DIR, CAPTURE_FPS
     template_path = os.path.join(BASE_DIR, "cloud_server", "templates", "phone.html")
     try:
+        with open(template_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+        html_content = html_content.replace("{{CAPTURE_FPS}}", str(CAPTURE_FPS))
         with open(template_path, "r", encoding="utf-8") as f:
             html_content = f.read()
         return HTMLResponse(content=html_content)

@@ -645,7 +645,7 @@
         }
 
         let lastCaptureTime = 0;
-        const CAPTURE_INTERVAL = 1000 / 15;  // max 15 fps capture
+        const CAPTURE_INTERVAL = 1000 / {{CAPTURE_FPS}};
 
         function captureAndSend() {
             if (!streaming) return;
