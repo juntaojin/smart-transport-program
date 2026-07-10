@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor, Future
 from loguru import logger
 from cloud_server.pipeline.engine import PipelineNode
 from cloud_server.pipeline.context import FrameContext
@@ -12,25 +11,16 @@ class PlateRecognitionNode(PipelineNode):
     def __init__(self):
         super().__init__(name="plate_ocr")
         self._frame_count = 0
-        self._plate_cache: dict = {}       # {device_id: {track_id: (plate, conf)}}
-        self._pending: dict = {}            # {device_id: {track_id: Future}}
-        self._executor: ThreadPoolExecutor | None = None
+        self._plate_cache: dict = {}  # {device_id: {track_id: (plate_number, confidence)}}
 
     def load_model(self):
-        if self._executor is None:
-            self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ocr")
+        logger.info("[PlateOCR] Node ready (sync with track_id cache)")
         self._frame_count = 0
         self._plate_cache.clear()
-        self._pending.clear()
-        logger.info("[PlateOCR] Node ready (async OCR with thread pool)")
 
     def unload_model(self):
-        if self._executor is not None:
-            self._executor.shutdown(wait=False)
-            self._executor = None
         self._plate_cache.clear()
-        self._pending.clear()
-        logger.info("[PlateOCR] Node disabled, executor shut down")
+        logger.info("[PlateOCR] Node disabled, cache cleared")
 
     def _crop_vehicle_roi(self, frame: np.ndarray, bbox: list) -> Optional[np.ndarray]:
         x1, y1, x2, y2 = [int(c) for c in bbox]
@@ -61,31 +51,11 @@ class PlateRecognitionNode(PipelineNode):
         track_ids = context.properties.get("track_ids", [])
 
         device_cache = self._plate_cache.setdefault(context.device_id, {})
-        device_pending = self._pending.setdefault(context.device_id, {})
 
         plates = []
         confidences = []
         recognized = 0
         cached = 0
-        pending_count = 0
-
-        # 1. Harvest completed OCR futures
-        for tid in list(device_pending):
-            fut = device_pending[tid]
-            if fut.done():
-                try:
-                    plate, pconf = fut.result()
-                    if plate and pconf >= 0.6:
-                        device_cache[tid] = (plate, pconf)
-                        logger.info(
-                            f"[PlateOCR] Frame #{self._frame_count}: "
-                            f"track_id={tid} -> {plate} (conf={pconf:.3f}) [async]"
-                        )
-                except Exception as e:
-                    logger.error(f"[PlateOCR] Async OCR failed for track_id={tid}: {e}")
-                del device_pending[tid]
-
-        active_ids = set()
 
         for idx, box in enumerate(boxes):
             cls_name = classes[idx] if idx < len(classes) else "vehicle"
@@ -96,55 +66,52 @@ class PlateRecognitionNode(PipelineNode):
                 confidences.append(0.0)
                 continue
 
-            if tid is not None:
-                active_ids.add(tid)
-
-            # Hit cache
             if tid is not None and tid in device_cache:
-                cp, cc = device_cache[tid]
-                plates.append(cp)
-                confidences.append(cc)
+                cached_plate, cached_conf = device_cache[tid]
+                plates.append(cached_plate)
+                confidences.append(cached_conf)
                 cached += 1
                 continue
 
-            # Already submitted, waiting
-            if tid is not None and tid in device_pending:
-                plates.append("")
-                confidences.append(0.0)
-                pending_count += 1
-                continue
-
-            # New vehicle: submit async OCR
-            if tid is not None:
+            try:
                 roi = self._crop_vehicle_roi(context.frame, box)
-                if roi is not None and self._executor is not None:
-                    fut = self._executor.submit(recognize_plate, roi.copy())
-                    device_pending[tid] = fut
-                    pending_count += 1
+                if roi is None:
+                    plates.append("")
+                    confidences.append(0.0)
+                    continue
+
+                plate, pconf = recognize_plate(roi)
+
+                if plate and pconf >= 0.6:
+                    plates.append(plate)
+                    confidences.append(pconf)
+                    recognized += 1
+                    if tid is not None:
+                        device_cache[tid] = (plate, pconf)
+                    logger.info(f"[PlateOCR] Frame #{self._frame_count}: track_id={tid} -> {plate} (conf={pconf:.3f})")
+                else:
+                    plates.append("")
+                    confidences.append(0.0)
+            except NotImplementedError:
+                logger.error("[PlateOCR] recognize_plate() 尚未实现！")
                 plates.append("")
                 confidences.append(0.0)
-                continue
+            except Exception as e:
+                logger.error(f"[PlateOCR] Error frame #{self._frame_count}, vehicle {idx}: {e}")
+                plates.append("")
+                confidences.append(0.0)
 
-            plates.append("")
-            confidences.append(0.0)
-
-        # Clean up stale cache entries
-        stale = [tid for tid in device_cache if tid not in active_ids]
-        for tid in stale:
+        active_ids = {track_ids[i] for i in range(len(track_ids)) if track_ids[i] is not None}
+        stale_ids = [tid for tid in device_cache if tid not in active_ids]
+        for tid in stale_ids:
             device_cache.pop(tid, None)
-
-        # Clean up stale pending futures (vehicle disappeared)
-        stale_pending = [tid for tid in device_pending if tid not in active_ids]
-        for tid in stale_pending:
-            device_pending.pop(tid, None)
-
-        context.properties["plate_numbers"] = plates
-        context.properties["plate_confidences"] = confidences
 
         if self._frame_count <= 5 or self._frame_count % 30 == 0:
             logger.info(
                 f"[PlateOCR] Frame #{self._frame_count}: {len(boxes)} vehicles, "
-                f"{recognized} new plates, {cached} from cache, {pending_count} pending"
+                f"{recognized} new plates, {cached} from cache"
             )
 
+        context.properties["plate_numbers"] = plates
+        context.properties["plate_confidences"] = confidences
         return context
