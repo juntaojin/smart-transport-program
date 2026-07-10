@@ -181,16 +181,15 @@ class Sort:
             
         i = len(self.trackers)
         for trk in reversed(self.trackers):
+            i -= 1
             if trk.time_since_update > self.max_age:
                 self.trackers.pop(i)
-                i -= 1
                 continue
             d = trk.get_state()
             # Output: matched in current frame, OR recently active (Kalman prediction)
             confirmed = (trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits)
             if confirmed and trk.time_since_update <= self.max_age:
                 ret.append(np.concatenate((d, [trk.id + 1])).reshape(1, -1))
-            i -= 1
                 
         if len(ret) > 0:
             return np.concatenate(ret)
