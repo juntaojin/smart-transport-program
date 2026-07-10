@@ -1,4 +1,5 @@
 import os
+import traceback
 import numpy as np
 from ultralytics import YOLO
 
@@ -71,5 +72,7 @@ def detect_vehicles(frame):
                 })
 
         return vehicles
-    except Exception:
+    except Exception as e:
+        print(f"[detect_vehicles] Error: {e}")
+        traceback.print_exc()
         return []
