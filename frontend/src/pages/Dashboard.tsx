@@ -218,7 +218,7 @@ export default function Dashboard() {
         pendingFrame = currentFrame;
         img.onload = () => {
           if (!animating || !canvasW || !canvasH) return;
-          const scale = Math.max(
+          const scale = Math.min(
             canvasW / img.naturalWidth,
             canvasH / img.naturalHeight
           );
@@ -226,6 +226,7 @@ export default function Dashboard() {
           const sh = img.naturalHeight * scale;
           const sx = (canvasW - sw) / 2;
           const sy = (canvasH - sh) / 2;
+          ctx.clearRect(0, 0, canvasW, canvasH);
           ctx.drawImage(img, sx, sy, sw, sh);
           
           // Draw zones overlay (use refs to avoid stale closure)
