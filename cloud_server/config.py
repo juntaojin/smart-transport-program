@@ -74,7 +74,7 @@ DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
 VIDEO_FRAME_WIDTH = c_server["video"]["width"]
 VIDEO_FRAME_HEIGHT = c_server["video"]["height"]
 VIDEO_FPS = c_server["video"]["fps"]
-JPEG_QUALITY = c_server["video"].get("jpeg_quality", 80)
+JPEG_QUALITY = c_server["video"].get("jpeg_quality", 50)
 
 # AI Model Config
 model_path = c_server["models"]["yolo_model_path"]

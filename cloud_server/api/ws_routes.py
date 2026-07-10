@@ -4,6 +4,8 @@ import numpy as np
 import base64
 import json
 import asyncio
+import torch
+from torchvision.io import decode_jpeg
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 from datetime import datetime
@@ -248,6 +250,17 @@ def _process_frame(pipeline, frame, mode, device_id, fc):
     return context, buf
 
 
+def _process_pipeline_only(pipeline, frame, mode, device_id, fc):
+    """Run pipeline only, skip annotation/encode if no viewers"""
+    context = FrameContext(
+        frame_data=frame,
+        timestamp=time.time(),
+        device_id=device_id,
+    )
+    context = pipeline.execute(context, mode=mode)
+    return context
+
+
 # --- Stream WebSocket (Edge -> Cloud) ---
 @router.websocket("/stream/{device_id}")
 async def receive_stream(websocket: WebSocket, device_id: str):
@@ -257,7 +270,7 @@ async def receive_stream(websocket: WebSocket, device_id: str):
     
     pipeline = websocket.app.state.pipeline
     last_broadcast_time = 0.0
-    BROADCAST_INTERVAL = 1.0 / 15  # max 15 fps broadcast
+    BROADCAST_INTERVAL = 1.0 / 10  # max 10 fps broadcast
     
     try:
         frame_no = 0
@@ -295,7 +308,7 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                 if frame_no % 30 == 0:
                     logger.info(
                         f"[Timing {device_id}] frame #{frame_no} (fast) | "
-                        f"payload img: {len(img_b64)/1024:.0f}KB"
+                    f"payload img: {len(img_b64)/1024:.0f}KB" if img_b64 else "no viewers"
                     )
                 continue
 
@@ -307,9 +320,17 @@ async def receive_stream(websocket: WebSocket, device_id: str):
             
             device_busy[device_id] = True
             try:
-                # Run heavy pipeline in thread to avoid blocking event loop
-                nparr = np.frombuffer(data, np.uint8)
-                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                # GPU JPEG decode
+                try:
+                    tensor = decode_jpeg(
+                        torch.frombuffer(bytearray(data), dtype=torch.uint8),
+                        device='cuda'
+                    )
+                    frame = tensor[[2, 1, 0], :, :].permute(1, 2, 0).contiguous().cpu().numpy()
+                except Exception:
+                    nparr = np.frombuffer(data, np.uint8)
+                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
                 if frame is None:
                     device_busy[device_id] = False
                     continue
@@ -317,10 +338,17 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                 frame_counters[device_id] = frame_counters.get(device_id, 0) + 1
                 fc = frame_counters[device_id]
                 mode = "full" if fc % 15 == 0 else "track"
-                
-                context, annotated_buffer = await asyncio.to_thread(
-                    _process_frame, pipeline, frame, mode, device_id, fc
-                )
+
+                has_viewers = len(dashboard_manager.active_connections) > 0
+                if has_viewers:
+                    context, annotated_buffer = await asyncio.to_thread(
+                        _process_frame, pipeline, frame, mode, device_id, fc
+                    )
+                else:
+                    context = await asyncio.to_thread(
+                        _process_pipeline_only, pipeline, frame, mode, device_id, fc
+                    )
+                    annotated_buffer = None
             finally:
                 device_busy[device_id] = False
 
@@ -357,7 +385,10 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                     "world_coord": wc,
                 })
                 
-            img_b64 = base64.b64encode(annotated_buffer).decode('utf-8')
+            if annotated_buffer is not None:
+                img_b64 = base64.b64encode(annotated_buffer).decode('utf-8')
+            else:
+                img_b64 = ""
             fps = calculate_fps()
             
             v_count = len(context.properties.get("vehicle_boxes", []))
@@ -375,7 +406,7 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                 "timestamp": context.timestamp,
                 "fps": fps,
                 "congestion_level": congestion,
-                "image": f"data:image/jpeg;base64,{img_b64}",
+                "image": f"data:image/jpeg;base64,{img_b64}" if img_b64 else "",
                 "vehicles": vehicles_payload,
                 "violations": context.properties.get("violations", []),
                 "anomalies": context.properties.get("road_anomalies", []),
@@ -383,7 +414,8 @@ async def receive_stream(websocket: WebSocket, device_id: str):
             }
             
             asyncio.create_task(save_aggregated_stats(context.properties, device_id))
-            asyncio.create_task(dashboard_manager.broadcast(payload))
+            if has_viewers:
+                asyncio.create_task(dashboard_manager.broadcast(payload))
             last_broadcast_time = time.time()
             
             if fc % 30 == 0:
