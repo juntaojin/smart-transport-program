@@ -43,12 +43,17 @@ export default function Dashboard() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const latestFrameRef = useRef<string | null>(null);
   
-  // Zone drawing state
+  // Zone drawing state (use refs for canvas render closure)
   const [isDrawing, setIsDrawing] = useState(false);
   const [currentZonePoints, setCurrentZonePoints] = useState<{x: number, y: number}[]>([]);
   const [zoneName, setZoneName] = useState('禁停区');
   const [existingZones, setExistingZones] = useState<any[]>([]);
   const frameSizeRef = useRef({ w: 1280, h: 720, offX: 0, offY: 0, scaleW: 0, scaleH: 0 });
+  const zonesForRender = useRef<any[]>([]);
+  const pointsForRender = useRef<{x: number, y: number}[]>([]);
+  // Keep refs in sync with state for render closure
+  zonesForRender.current = existingZones;
+  pointsForRender.current = currentZonePoints;
   
   // System Metrics
   const [metrics, setMetrics] = useState({
@@ -223,13 +228,15 @@ export default function Dashboard() {
           const sy = (canvasH - sh) / 2;
           ctx.drawImage(img, sx, sy, sw, sh);
           
-          // Draw zones overlay
+          // Draw zones overlay (use refs to avoid stale closure)
           const fw = img.naturalWidth;
           const fh = img.naturalHeight;
           frameSizeRef.current = { w: fw, h: fh, offX: sx, offY: sy, scaleW: sw, scaleH: sh };
           const drawZones = () => {
+            const zones = zonesForRender.current;
+            const points = pointsForRender.current;
             // Draw existing zones
-            for (const zone of existingZones) {
+            for (const zone of zones) {
               if (!zone.points || zone.points.length < 3) continue;
               ctx.beginPath();
               for (let i = 0; i < zone.points.length; i++) {
@@ -239,44 +246,43 @@ export default function Dashboard() {
                 else ctx.lineTo(px, py);
               }
               ctx.closePath();
-              ctx.fillStyle = 'rgba(239, 68, 68, 0.12)';
+              ctx.fillStyle = 'rgba(239, 68, 68, 0.15)';
               ctx.fill();
               ctx.strokeStyle = 'rgba(239, 68, 68, 0.7)';
               ctx.lineWidth = 2;
               ctx.setLineDash([6, 3]);
               ctx.stroke();
               ctx.setLineDash([]);
-              // Label
               const cx = zone.points.reduce((a: number, p: number[]) => a + p[0], 0) / zone.points.length;
               const cy = zone.points.reduce((a: number, p: number[]) => a + p[1], 0) / zone.points.length;
               ctx.fillStyle = 'rgba(239, 68, 68, 0.9)';
-              ctx.font = '12px monospace';
-              ctx.fillText(zone.name || '禁停区', sx + cx * sw, sy + cy * sh);
+              ctx.font = 'bold 13px monospace';
+              ctx.fillText(zone.name || '禁停区', sx + cx * sw - 20, sy + cy * sh);
             }
             // Draw current polygon being drawn
-            if (currentZonePoints.length >= 2) {
+            if (points.length >= 2) {
               ctx.beginPath();
               ctx.setLineDash([4, 4]);
-              ctx.strokeStyle = 'rgba(34, 197, 94, 0.8)';
-              ctx.lineWidth = 2;
-              for (let i = 0; i < currentZonePoints.length; i++) {
-                const px = sx + currentZonePoints[i].x / fw * sw;
-                const py = sy + currentZonePoints[i].y / fh * sh;
+              ctx.strokeStyle = 'rgba(34, 197, 94, 0.9)';
+              ctx.lineWidth = 2.5;
+              for (let i = 0; i < points.length; i++) {
+                const px = sx + points[i].x / fw * sw;
+                const py = sy + points[i].y / fh * sh;
                 if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
               }
               ctx.stroke();
               ctx.setLineDash([]);
             }
             // Draw vertices
-            for (const pt of currentZonePoints) {
+            for (const pt of points) {
               const px = sx + pt.x / fw * sw;
               const py = sy + pt.y / fh * sh;
               ctx.beginPath();
-              ctx.arc(px, py, 5, 0, Math.PI * 2);
+              ctx.arc(px, py, 6, 0, Math.PI * 2);
               ctx.fillStyle = 'rgba(34, 197, 94, 0.9)';
               ctx.fill();
               ctx.strokeStyle = '#fff';
-              ctx.lineWidth = 1.5;
+              ctx.lineWidth = 2;
               ctx.stroke();
             }
           };
@@ -363,9 +369,13 @@ export default function Dashboard() {
 
   const handleSaveZone = async () => {
     if (currentZonePoints.length < 3) return;
+    if (frameSizeRef.current.w === 0) {
+      alert('视频画面尚未加载，请等待画面出现后再绘制');
+      return;
+    }
     const normPoints = currentZonePoints.map(p => [
-      p.x / frameSizeRef.current.w,
-      p.y / frameSizeRef.current.h,
+      Math.round(p.x / frameSizeRef.current.w * 10000) / 10000,
+      Math.round(p.y / frameSizeRef.current.h * 10000) / 10000,
     ]);
     const newZone = { name: zoneName || '禁停区', points: normPoints };
     const updatedZones = [...existingZones, newZone];
@@ -375,9 +385,12 @@ export default function Dashboard() {
         setExistingZones(updatedZones);
         setCurrentZonePoints([]);
         setIsDrawing(false);
+      } else {
+        alert('保存失败: ' + (res.message || '未知错误'));
       }
-    } catch (err) {
-      alert('保存禁停区失败');
+    } catch (err: any) {
+      console.error('Zone save error:', err);
+      alert('保存禁停区失败: ' + (err?.message || '网络错误'));
     }
   };
 
@@ -387,11 +400,16 @@ export default function Dashboard() {
 
   const handleRemoveAllZones = async () => {
     try {
-      await configAPI.updateZones([]);
-      setExistingZones([]);
-      setCurrentZonePoints([]);
-      setIsDrawing(false);
-    } catch {}
+      const res = await configAPI.updateZones([]);
+      if (res.code === 200) {
+        setExistingZones([]);
+        setCurrentZonePoints([]);
+        setIsDrawing(false);
+      }
+    } catch (err: any) {
+      console.error('Zone remove error:', err);
+      alert('清除禁停区失败: ' + (err?.message || '网络错误'));
+    }
   };
 
   return (

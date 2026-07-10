@@ -2,7 +2,7 @@ import os
 import json
 import yaml
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Query, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, func
 from loguru import logger
@@ -275,9 +275,8 @@ async def get_zones_config(request: Request):
     return {"code": 200, "message": "success", "data": zones}
 
 @router.put("/configs/zones")
-async def update_zones_config(payload: list, request: Request):
+async def update_zones_config(payload: list = Body(...), request: Request = None):
     """Update no-parking zones, write to config.yaml for persistence"""
-    import yaml
     from cloud_server.config import CONFIG_PATH
 
     try:
