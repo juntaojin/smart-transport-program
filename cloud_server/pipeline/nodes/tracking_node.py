@@ -246,18 +246,20 @@ class TrackingNode(PipelineNode):
         super().__init__(name="tracking")
         self.tracker = None
         self._frame_count = 0
+        self._class_registry: dict[int, str] = {}
 
     def load_model(self):
-        # Instantiate Sort tracker on enablement
         if self.tracker is None:
-            logger.info("[Tracking] Initializing SORT Multi-Object Tracker (max_age=5, iou=0.3)")
+            logger.info("[Tracking] Initializing SORT Multi-Object Tracker (max_age=8, iou=0.3, prediction enabled)")
             self.tracker = Sort(max_age=8, min_hits=1, iou_threshold=0.3)
             self._frame_count = 0
+            self._class_registry: dict[int, str] = {}  # track_id -> class
 
     def unload_model(self):
         if self.tracker is not None:
             logger.info("[Tracking] Clearing SORT Tracker state")
             self.tracker = None
+            self._class_registry.clear()
 
     def _do_process(self, context: FrameContext) -> FrameContext:
         if self.tracker is None:
@@ -267,49 +269,53 @@ class TrackingNode(PipelineNode):
         boxes = context.properties.get("vehicle_boxes", [])
         confs = context.properties.get("vehicle_confidences", [])
         classes = context.properties.get("vehicle_classes", [])
-        
+
+        # Always call update even with empty detections (SORT outputs predictions)
+        dets = []
+        for box, conf in zip(boxes, confs):
+            dets.append([box[0], box[1], box[2], box[3], conf])
+        dets_arr = np.array(dets) if dets else np.empty((0, 5))
+        tracked_objects = self.tracker.update(dets_arr)
+
         track_ids = []
         tracked_boxes = []
         tracked_classes = []
-        
-        if len(boxes) > 0:
-            # Prepare detections for SORT: [x1, y1, x2, y2, score]
-            dets = []
-            for box, conf in zip(boxes, confs):
-                dets.append([box[0], box[1], box[2], box[3], conf])
-            dets = np.array(dets)
-            
-            # Update tracker
-            tracked_objects = self.tracker.update(dets)
-            
-            # Map SORT tracking outputs back to original items or use SORT tracked boxes
-            # tracked_objects is [[x1, y1, x2, y2, id], ...]
-            for obj in tracked_objects:
-                tx1, ty1, tx2, ty2, obj_id = obj
-                track_ids.append(int(obj_id))
-                tracked_boxes.append([float(tx1), float(ty1), float(tx2), float(ty2)])
-                
-                # Match to nearest original class label based on center distance or IoU
+
+        for obj in tracked_objects:
+            tx1, ty1, tx2, ty2, obj_id = obj
+            tid = int(obj_id)
+            track_ids.append(tid)
+            tracked_boxes.append([float(tx1), float(ty1), float(tx2), float(ty2)])
+
+            if len(boxes) > 0:
+                # IoU match to find best class label from current detections
                 best_cls = "vehicle"
                 best_iou = -1
                 for idx, orig_box in enumerate(boxes):
-                    orig_cls = classes[idx]
-                    # Calculate single IoU
                     ix1 = max(tx1, orig_box[0])
                     iy1 = max(ty1, orig_box[1])
                     ix2 = min(tx2, orig_box[2])
                     iy2 = min(ty2, orig_box[3])
                     iw = max(0, ix2 - ix1)
                     ih = max(0, iy2 - iy1)
-                    area = iw * ih
-                    union = (tx2 - tx1) * (ty2 - ty1) + (orig_box[2] - orig_box[0]) * (orig_box[3] - orig_box[1]) - area
-                    iou = area / union if union > 0 else 0
+                    inter = iw * ih
+                    union = (tx2 - tx1) * (ty2 - ty1) + (orig_box[2] - orig_box[0]) * (orig_box[3] - orig_box[1]) - inter
+                    iou = inter / union if union > 0 else 0
                     if iou > best_iou:
                         best_iou = iou
-                        best_cls = orig_cls
+                        best_cls = classes[idx]
+                self._class_registry[tid] = best_cls
                 tracked_classes.append(best_cls)
-        
-        # Write tracking results back to properties (overwrite bounding boxes with smoothed/tracked boxes)
+            else:
+                # No detections this frame: use remembered class
+                tracked_classes.append(self._class_registry.get(tid, "car"))
+
+        # Clean up registry for stale trackers
+        active_ids = set(track_ids)
+        stale = [k for k in self._class_registry if k not in active_ids]
+        for k in stale:
+            del self._class_registry[k]
+
         context.properties["track_ids"] = track_ids
         context.properties["vehicle_boxes"] = tracked_boxes
         context.properties["vehicle_classes"] = tracked_classes
