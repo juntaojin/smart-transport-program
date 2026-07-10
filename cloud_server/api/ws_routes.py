@@ -4,8 +4,6 @@ import numpy as np
 import base64
 import json
 import asyncio
-import torch
-from torchvision.io import decode_jpeg
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 from datetime import datetime
@@ -51,6 +49,7 @@ dashboard_manager = ConnectionManager()
 active_devices = {}  # Keep track of active streaming devices {device_id: last_seen}
 frame_counters = {}  # Per-device frame counter for key frame strategy
 plate_db = {}  # Per-device plate history: {device_id: {track_id: plate_string}}
+device_busy: dict[str, bool] = {}  # Per-device processing guard, skip frame if busy
 
 # FPS and throughput calculation helpers
 frame_times = []
@@ -234,6 +233,21 @@ async def save_aggregated_stats(properties, device_id):
         await db.commit()
 
 
+def _process_frame(pipeline, frame, mode, device_id, fc):
+    """Run pipeline + annotate + encode in thread (blocks, don't call from async)"""
+    context = FrameContext(
+        frame_data=frame,
+        timestamp=time.time(),
+        device_id=device_id,
+    )
+    context = pipeline.execute(context, mode=mode)
+    annotated = annotate_frame(frame, context.properties)
+    success, buf = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+    if not success:
+        return None, None
+    return context, buf
+
+
 # --- Stream WebSocket (Edge -> Cloud) ---
 @router.websocket("/stream/{device_id}")
 async def receive_stream(websocket: WebSocket, device_id: str):
@@ -257,8 +271,6 @@ async def receive_stream(websocket: WebSocket, device_id: str):
             if now - last_broadcast_time < BROADCAST_INTERVAL:
                 continue
             
-            t_recv = now
-            
             has_active_nodes = any(node.enabled for node in pipeline.nodes.values())
             has_parking_zones = len(NO_PARKING_ZONES) > 0
             
@@ -277,47 +289,42 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                     "anomalies": [],
                     "system_metrics": get_detailed_metrics()
                 }
-                t_process = time.time()
                 asyncio.create_task(dashboard_manager.broadcast(payload))
-                last_broadcast_time = t_process
+                last_broadcast_time = time.time()
                 
                 if frame_no % 30 == 0:
                     logger.info(
                         f"[Timing {device_id}] frame #{frame_no} (fast) | "
-                        f"encode: {(t_process-t_recv)*1000:.0f}ms | "
                         f"payload img: {len(img_b64)/1024:.0f}KB"
                     )
                 continue
+
+            # Skip if still processing previous frame
+            if device_busy.get(device_id, False):
+                if frame_no % 60 == 0:
+                    logger.warning(f"[{device_id}] Skipping frame #{frame_no}: pipeline busy")
+                continue
             
-            # Normal path: GPU JPEG decode (nvJPEG, ~14x faster than cv2.imdecode)
+            device_busy[device_id] = True
             try:
-                # torchvision decode_jpeg returns RGB CHW tensor on GPU
-                # bytearray() ensures writable buffer for torch
-                tensor = decode_jpeg(
-                    torch.frombuffer(bytearray(data), dtype=torch.uint8),
-                    device='cuda'
-                )
-                # RGB CHW -> BGR HWC numpy for cv2 pipeline compatibility
-                frame = tensor[[2, 1, 0], :, :].permute(1, 2, 0).contiguous().cpu().numpy()
-            except Exception:
-                # Fallback to CPU decode if GPU decode fails (corrupt JPEG etc.)
+                # Run heavy pipeline in thread to avoid blocking event loop
                 nparr = np.frombuffer(data, np.uint8)
                 frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if frame is None:
+                    device_busy[device_id] = False
+                    continue
+
+                frame_counters[device_id] = frame_counters.get(device_id, 0) + 1
+                fc = frame_counters[device_id]
+                mode = "full" if fc % 15 == 0 else "track"
                 
-            context = FrameContext(
-                frame_data=frame,
-                timestamp=time.time(),
-                device_id=device_id
-            )
-            
-            frame_counters[device_id] = frame_counters.get(device_id, 0) + 1
-            fc = frame_counters[device_id]
-            mode = "full" if fc % 15 == 0 else "track"
-            
-            context = pipeline.execute(context, mode=mode)
-            annotated = annotate_frame(frame, context.properties)
-            success, buffer = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-            if not success:
+                context, annotated_buffer = await asyncio.to_thread(
+                    _process_frame, pipeline, frame, mode, device_id, fc
+                )
+            finally:
+                device_busy[device_id] = False
+
+            if context is None:
                 continue
 
             # Persist plates by track_id
@@ -347,10 +354,10 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                     "class": cls_name,
                     "box": [float(c) for c in box],
                     "plate": plate,
-                    "world_coord": wc,  # {"x": ..., "y": ...} 或 None（未标定）
+                    "world_coord": wc,
                 })
                 
-            img_b64 = base64.b64encode(buffer).decode('utf-8')
+            img_b64 = base64.b64encode(annotated_buffer).decode('utf-8')
             fps = calculate_fps()
             
             v_count = len(context.properties.get("vehicle_boxes", []))
@@ -382,7 +389,6 @@ async def receive_stream(websocket: WebSocket, device_id: str):
             if fc % 30 == 0:
                 logger.info(
                     f"[Timing {device_id}] frame #{fc} mode={mode} | "
-                    f"process: {(time.time()-t_recv)*1000:.0f}ms | "
                     f"payload img: {len(img_b64)/1024:.0f}KB"
                 )
 
