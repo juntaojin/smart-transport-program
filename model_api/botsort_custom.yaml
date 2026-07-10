@@ -1,0 +1,14 @@
+# Ultralytics BoT-SORT tracker configuration
+# https://docs.ultralytics.com/modes/track/
+
+tracker_type: botsort
+
+track_high_thresh: 0.5       # 高置信度检测框阈值，用于第一轮关联
+track_low_thresh: 0.1        # 低置信度检测框阈值，用于第二轮关联(ByteTrack思想)
+new_track_thresh: 0.6        # 新轨迹创建的最低检测置信度
+track_buffer: 30             # 轨迹丢失后保留的帧数
+match_thresh: 0.8            # 关联匹配的IoU阈值
+
+# BoT-SORT specific
+fuse_score: true             # 是否在关联时融合检测置信度
+gmc_method: sparseOptFlow    # 相机运动补偿方法

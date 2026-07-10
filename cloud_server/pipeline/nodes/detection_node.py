@@ -44,11 +44,13 @@ class VehicleDetectionNode(PipelineNode):
         boxes = []
         classes = []
         confs = []
+        tids = []
 
         for v in vehicles:
             boxes.append(v["box"])
             classes.append(v["class"])
             confs.append(v.get("confidence", 0.0))
+            tids.append(v.get("track_id"))
 
         if self._frame_count <= 5 or self._frame_count % 30 == 0:
             logger.info(f"[VehicleDetection] Frame #{self._frame_count}: detected {len(boxes)} vehicles")
@@ -56,4 +58,5 @@ class VehicleDetectionNode(PipelineNode):
         context.properties["vehicle_boxes"] = boxes
         context.properties["vehicle_classes"] = classes
         context.properties["vehicle_confidences"] = confs
+        context.properties["vehicle_track_ids"] = tids
         return context

@@ -13,3 +13,4 @@ greenlet
 python-multipart
 ultralytics>=8.0.215
 hyperlpr3
+lap>=0.5.12
