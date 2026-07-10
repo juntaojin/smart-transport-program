@@ -1,5 +1,6 @@
 import os
 import json
+import yaml
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -264,30 +265,140 @@ async def update_model_configs(payload: dict, request: Request):
 @router.get("/configs/zones")
 async def get_zones_config(request: Request):
     """Get configured no parking zones"""
-    pipeline = request.app.state.pipeline
-    # Fetch from violation detection node if active, or fall back to default
-    zones = NO_PARKING_ZONES
-    if "violation_detection" in pipeline.nodes:
-        zones = pipeline.nodes["violation_detection"].zones
+    from cloud_server.config import NO_PARKING_ZONES
+    zones = []
+    for z in NO_PARKING_ZONES:
+        zones.append({
+            "name": z["name"],
+            "points": [list(pt) for pt in z["points"]],
+        })
     return {"code": 200, "message": "success", "data": zones}
 
 @router.put("/configs/zones")
 async def update_zones_config(payload: list, request: Request):
-    """Update configured forbidden zones in memory"""
-    pipeline = request.app.state.pipeline
-    if "violation_detection" in pipeline.nodes:
-        node = pipeline.nodes["violation_detection"]
-        node.zones = payload
-        logger.info("Updated no parking zones list in Violation Detection Node")
-        return {"code": 200, "message": "success", "data": node.zones}
-    raise HTTPException(status_code=400, detail="Violation detection node is not initialized")
+    """Update no-parking zones, write to config.yaml for persistence"""
+    import yaml
+    from cloud_server.config import CONFIG_PATH
 
-# --- 4. Health Check API ---
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+
+        zones_data = []
+        for z in payload:
+            zones_data.append({
+                "name": z["name"],
+                "points": z["points"],
+            })
+
+        config["cloud_server"]["zones"]["no_parking"] = zones_data
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            yaml.safe_dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+        logger.info(f"Updated no-parking zones: {len(zones_data)} zones written to config.yaml")
+        return {"code": 200, "message": "success", "data": zones_data}
+    except Exception as e:
+        logger.error(f"Failed to update zones: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- 4. Calibration API (摄像头标定) ---
+
+from cloud_server.utils.homography import compute_homography, save_homography, load_homography, delete_homography
 
 
+@router.post("/calibration/compute")
+async def compute_calibration(payload: dict):
+    """计算并保存单应性标定矩阵
+
+    body: {
+        "device_id": "camera_01",
+        "image_points": [[x, y], ...],    # 摄像头画面中的点（至少4个）
+        "world_points": [[x, y], ...]     # 俯视图中对应的点
+    }
+    """
+    device_id = payload.get("device_id")
+    image_points = payload.get("image_points", [])
+    world_points = payload.get("world_points", [])
+
+    if not device_id:
+        raise HTTPException(status_code=400, detail="device_id is required")
+    if not image_points or not world_points:
+        raise HTTPException(status_code=400, detail="image_points and world_points are required")
+    if len(image_points) < 4:
+        raise HTTPException(status_code=400, detail="at least 4 point pairs required")
+
+    H = compute_homography(image_points, world_points)
+    if H is None:
+        raise HTTPException(status_code=400,
+                            detail="Failed to compute homography. Check point correspondence quality.")
+
+    success = save_homography(device_id, image_points, world_points, H)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to save calibration to config file.")
+
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {
+            "device_id": device_id,
+            "homography_matrix": [[round(float(v), 8) for v in row] for row in H],
+        }
+    }
+
+
+@router.get("/calibration")
+async def list_calibrations():
+    """列出所有已标定的设备"""
+    try:
+        config = yaml.safe_load(open(CONFIG_PATH, "r", encoding="utf-8")) or {}
+    except Exception:
+        config = {}
+    calibrations = config.get("calibration", {})
+    return {"code": 200, "message": "success", "data": {"devices": list(calibrations.keys())}}
+
+
+@router.get("/calibration/{device_id}")
+async def get_calibration(device_id: str):
+    """获取指定设备的标定数据"""
+    H = load_homography(device_id)
+    if H is None:
+        raise HTTPException(status_code=404, detail=f"No calibration found for device '{device_id}'")
+
+    try:
+        config = yaml.safe_load(open(CONFIG_PATH, "r", encoding="utf-8")) or {}
+    except Exception:
+        config = {}
+    calib_data = config.get("calibration", {}).get(device_id, {})
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {
+            "device_id": device_id,
+            "image_points": calib_data.get("image_points", []),
+            "world_points": calib_data.get("world_points", []),
+            "homography_matrix": calib_data.get("homography_matrix", []),
+        }
+    }
+
+
+@router.delete("/calibration/{device_id}")
+async def remove_calibration(device_id: str):
+    """删除指定设备的标定数据"""
+    success = delete_homography(device_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"No calibration found for device '{device_id}'")
+    return {"code": 200, "message": "success", "data": {"device_id": device_id}}
 
 
 # --- 5. RTSP Sand Table Camera Stream Management ---
+
+
+# --- 6. Health Check API ---
+
+
+@router.get("/health")
+async def health_check():
+    return {"code": 200, "message": "healthy", "data": {"status": "OK", "timestamp": datetime.utcnow().isoformat()}}
 
 from cloud_server.api.rtsp_streamer import SAND_TABLE_CAMERAS
 

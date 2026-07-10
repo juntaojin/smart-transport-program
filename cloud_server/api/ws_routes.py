@@ -319,8 +319,9 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                     if plate:
                         plate_db[device_id][tid] = plate
 
-            # Build vehicle list with persisted plates
+            # Build vehicle list with persisted plates and world coordinates
             dev_plates = plate_db.get(device_id, {})
+            world_coords = context.properties.get("world_coords", {})
             track_ids = context.properties.get("track_ids", [])
             vehicle_boxes = context.properties.get("vehicle_boxes", [])
             vehicle_classes = context.properties.get("vehicle_classes", [])
@@ -329,11 +330,13 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                 tid = track_ids[i] if i < len(track_ids) else None
                 cls_name = vehicle_classes[i] if i < len(vehicle_classes) else "vehicle"
                 plate = dev_plates.get(tid, "") if tid is not None else ""
+                wc = world_coords.get(tid, None)
                 vehicles_payload.append({
                     "id": tid,
                     "class": cls_name,
                     "box": [float(c) for c in box],
-                    "plate": plate
+                    "plate": plate,
+                    "world_coord": wc,  # {"x": ..., "y": ...} 或 None（未标定）
                 })
                 
             img_b64 = base64.b64encode(buffer).decode('utf-8')

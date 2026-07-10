@@ -1,84 +1,46 @@
-import gc
-import torch
-import cv2
-from PIL import Image
 from loguru import logger
-from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from cloud_server.pipeline.engine import PipelineNode
 from cloud_server.pipeline.context import FrameContext
+from model_api import detect_anomalies
+
 
 class AnomalyDetectionNode(PipelineNode):
-    """基于 Grounding DINO 的零样本路面异常检测节点"""
-
-    def __init__(self, threshold: float = 0.25):
+    def __init__(self):
         super().__init__(name="anomaly_detection")
-        self.threshold = threshold
-        self.model_id = "IDEA-Research/grounding-dino-tiny"
-        self.processor = None
+        self._frame_count = 0
 
     def load_model(self):
-        if self._model is None:
-            logger.info(f"Loading Grounding DINO model '{self.model_id}'...")
-            self.processor = AutoProcessor.from_pretrained(self.model_id)
-            self._model = AutoModelForZeroShotObjectDetection.from_pretrained(self.model_id)
-            
-            # Move to GPU/device if available
-            device = "cpu"
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif torch.backends.mps.is_available():
-                device = "mps"
-            self._model.to(device)
+        logger.info("[AnomalyDetection] Node ready (function-call mode)")
+        self._frame_count = 0
 
     def unload_model(self):
-        if self._model is not None:
-            logger.info("Unloading Grounding DINO model and clearing cache")
-            self._model = None
-            self.processor = None
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+        logger.info("[AnomalyDetection] Node disabled")
 
     def _do_process(self, context: FrameContext) -> FrameContext:
-        if self._model is None:
-            self.load_model()
+        self._frame_count += 1
 
-        # Text prompt for anomalies/obstacles on the road
-        prompt = "obstacle . debris . dropped cargo . tire . box . trash . rock"
-        
-        # Convert BGR frame to PIL RGB
-        image_rgb = cv2.cvtColor(context.frame, cv2.COLOR_BGR2RGB)
-        image_pil = Image.fromarray(image_rgb)
-        
-        device = next(self._model.parameters()).device
-        
-        # Process inputs
-        inputs = self.processor(images=image_pil, text=prompt, return_tensors="pt").to(device)
-        
-        with torch.no_grad():
-            outputs = self._model(**inputs)
-            
-        # Post-process detections
-        results = self.processor.post_process_grounded_object_detection(
-            outputs, 
-            input_ids=inputs.input_ids,
-            threshold=self.threshold, 
-            text_threshold=0.25,
-            target_sizes=[image_pil.size[::-1]]
-        )[0]
-        
-        # Extract bounding boxes, labels, and confidences
-        anomalies = []
-        boxes = results["boxes"].cpu().numpy().tolist()
-        scores = results["scores"].cpu().numpy().tolist()
-        labels = results["labels"]
-        
-        for box, score, label in zip(boxes, scores, labels):
-            anomalies.append({
-                "box": [float(coord) for coord in box],
-                "confidence": float(score),
-                "label": label
-            })
-            
-        context.properties["road_anomalies"] = anomalies
+        try:
+            anomalies = detect_anomalies(context.frame)
+        except NotImplementedError:
+            logger.error("[AnomalyDetection] detect_anomalies() 尚未实现！等待模型同学实现。")
+            context.properties["road_anomalies"] = []
+            return context
+        except Exception as e:
+            logger.error(f"[AnomalyDetection] 函数调用失败: {e}")
+            context.properties["road_anomalies"] = []
+            return context
+
+        filtered = []
+        for a in anomalies:
+            if a.get("confidence", 0.0) >= 0.4:
+                filtered.append({
+                    "box": [float(c) for c in a["box"]],
+                    "confidence": float(a.get("confidence", 0.0)),
+                    "label": a.get("label", "road_anomaly"),
+                })
+
+        if self._frame_count <= 5 or self._frame_count % 30 == 0:
+            logger.info(f"[AnomalyDetection] Frame #{self._frame_count}: {len(filtered)} anomalies (raw: {len(anomalies)})")
+
+        context.properties["road_anomalies"] = filtered
         return context

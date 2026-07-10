@@ -2,7 +2,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from loguru import logger
 import uvicorn
-import torch
 import os
 
 from cloud_server.database.connection import engine, Base
@@ -17,25 +16,22 @@ from cloud_server.pipeline.nodes.tracking_node import TrackingNode
 from cloud_server.pipeline.nodes.ocr_node import PlateRecognitionNode
 from cloud_server.pipeline.nodes.anomaly_node import AnomalyDetectionNode
 from cloud_server.pipeline.nodes.violation_node import ViolationDetectionNode
-from cloud_server.config import YOLO_MODEL_PATH, YOLO_CONFIDENCE, YOLO_IOU, YOLO_IMGSZ
+from cloud_server.pipeline.nodes.transform_node import CoordinateTransformNode
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     logger.info("Environment Info:")
-    logger.info(f"  PyTorch version: {torch.__version__}")
-    logger.info(f"  CUDA compiled: {torch.version.cuda}")
-    logger.info(f"  CUDA available: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        logger.info(f"  CUDA device count: {torch.cuda.device_count()}")
-        logger.info(f"  CUDA device: {torch.cuda.get_device_name(0)}")
-        logger.info(f"  CUDA memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-    else:
-        logger.warning("  CUDA NOT AVAILABLE - all models will run on CPU")
-        logger.warning("  Check: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118")
-    logger.info(f"  YOLO model path: {YOLO_MODEL_PATH}")
-    logger.info(f"  YOLO model exists: {os.path.exists(YOLO_MODEL_PATH)}")
-    logger.info(f"  YOLO config: conf={YOLO_CONFIDENCE}, iou={YOLO_IOU}, imgsz={YOLO_IMGSZ}")
+    try:
+        import torch
+        logger.info(f"  PyTorch: {torch.__version__}")
+        logger.info(f"  CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            logger.info(f"  CUDA device: {torch.cuda.get_device_name(0)}")
+    except ImportError:
+        logger.info("  PyTorch: not installed (模型推理由 model_api 包提供)")
+    logger.info("  Model API: model_api/ (函数直接调用)")
     logger.info("=" * 60)
 
     # 1. Initialize SQLite Database Tables
@@ -49,6 +45,7 @@ async def lifespan(app: FastAPI):
     pipeline = InferencePipeline()
     pipeline.add_node(VehicleDetectionNode())
     pipeline.add_node(TrackingNode())
+    pipeline.add_node(CoordinateTransformNode())  # 坐标变换：像素 → 俯视世界坐标
     pipeline.add_node(PlateRecognitionNode())
     pipeline.add_node(AnomalyDetectionNode())
     pipeline.add_node(ViolationDetectionNode())
@@ -68,13 +65,13 @@ async def lifespan(app: FastAPI):
     yield
 
     # 4. Clean up on shutdown
-    logger.info("Application shutting down. Releasing model resources...")
+    logger.info("Application shutting down. Cleaning up nodes...")
     for name, node in pipeline.nodes.items():
         try:
             node.unload_model()
         except Exception as e:
-            logger.error(f"Error unloading node '{name}': {e}")
-    logger.info("Models successfully unloaded.")
+            logger.error(f"Error cleaning up node '{name}': {e}")
+    logger.info("All nodes cleaned up.")
 
 
 # Create FastAPI App
@@ -94,7 +91,6 @@ app.include_router(ws_router)
 
 # Route to serve the mobile phone camera stream client webpage
 from fastapi.responses import HTMLResponse
-import os
 
 @app.get("/phone", response_class=HTMLResponse)
 async def get_phone_stream_page():
@@ -109,7 +105,6 @@ async def get_phone_stream_page():
         return HTMLResponse(content="<h1>Internal Server Error: Missing phone.html template</h1>", status_code=500)
 
 if __name__ == "__main__":
-    import os
     from cloud_server.config import HOST, PORT, ENABLE_SSL, BASE_DIR
     
     ssl_keyfile = None
