@@ -4,6 +4,8 @@ import numpy as np
 import base64
 import json
 import asyncio
+import torch
+from torchvision.io import decode_jpeg
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 from datetime import datetime
@@ -287,11 +289,20 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                     )
                 continue
             
-            # Normal path: decode, process, annotate, re-encode
-            nparr = np.frombuffer(data, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            if frame is None:
-                continue
+            # Normal path: GPU JPEG decode (nvJPEG, ~14x faster than cv2.imdecode)
+            try:
+                # torchvision decode_jpeg returns RGB CHW tensor on GPU
+                # bytearray() ensures writable buffer for torch
+                tensor = decode_jpeg(
+                    torch.frombuffer(bytearray(data), dtype=torch.uint8),
+                    device='cuda'
+                )
+                # RGB CHW -> BGR HWC numpy for cv2 pipeline compatibility
+                frame = tensor[[2, 1, 0], :, :].permute(1, 2, 0).contiguous().cpu().numpy()
+            except Exception:
+                # Fallback to CPU decode if GPU decode fails (corrupt JPEG etc.)
+                nparr = np.frombuffer(data, np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                 
             context = FrameContext(
                 frame_data=frame,

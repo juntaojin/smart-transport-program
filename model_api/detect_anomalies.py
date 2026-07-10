@@ -1,6 +1,7 @@
 import os
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
 
 BANK_FRAMES = 30
@@ -51,11 +52,16 @@ def _box_iou(a, b):
 
 
 class _ChangeDetector:
+    """GPU-accelerated background subtraction + foreground blob detector."""
+
+    # BGR → Gray weights (same as OpenCV)
+    _GRAY_WEIGHTS = torch.tensor([0.1140, 0.5870, 0.2989], dtype=torch.float32)
+
     def __init__(self):
         self.min_area = MIN_AREA
         self.diff_thresh = DIFF_THRESH
-        self.median_bg = None
-        self.running_bg = None
+        self.median_bg = None       # GPU float32 tensor
+        self.running_bg = None      # GPU float32 tensor
         self.alpha = 0.01
         self.open_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self.close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
@@ -63,42 +69,58 @@ class _ChangeDetector:
         self._warmed = False
         self._frame_h = 0
         self._frame_w = 0
+        self._device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    def _bgr_to_gray(self, frame_cpu: np.ndarray) -> torch.Tensor:
+        """Convert BGR numpy frame to gray GPU tensor."""
+        t = torch.from_numpy(frame_cpu).to(self._device, dtype=torch.float32)
+        # BGR matmul -> gray: (H, W, 3) @ (3,) -> (H, W)
+        gray = t @ self._GRAY_WEIGHTS.to(self._device)
+        return gray
 
     def warmup_feed(self, frame):
         if self._warmed:
             return True
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        self._warmup_buffer.append(gray.copy())
-        self._frame_h, self._frame_w = gray.shape
+        gray_cpu = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        self._warmup_buffer.append(gray_cpu)
+        self._frame_h, self._frame_w = gray_cpu.shape
         if len(self._warmup_buffer) >= BANK_FRAMES:
             stack = np.stack(self._warmup_buffer, axis=0)
-            self.median_bg = np.median(stack, axis=0).astype(np.uint8)
-            self.running_bg = self.median_bg.astype(np.float32)
+            median_cpu = np.median(stack, axis=0).astype(np.float32)
+            self.median_bg = torch.from_numpy(median_cpu).to(self._device)
+            self.running_bg = self.median_bg.clone()
             self._warmup_buffer.clear()
             self._warmed = True
         return self._warmed
 
     def detect(self, frame):
-        H, W = frame.shape[:2]
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Convert frame to GPU gray
+        gray = self._bgr_to_gray(frame)
 
-        diff_median = cv2.absdiff(gray, self.median_bg)
-        diff_running = cv2.absdiff(gray, self.running_bg.astype(np.uint8))
-        diff = cv2.max(diff_median, diff_running)
+        # Absdiff + max on GPU
+        diff_median = torch.abs(gray - self.median_bg)
+        diff_running = torch.abs(gray - self.running_bg)
+        diff = torch.maximum(diff_median, diff_running)
 
-        fg = (diff > self.diff_thresh).astype(np.uint8)
+        # Threshold
+        fg = (diff > self.diff_thresh).to(torch.uint8)
 
-        update_mask = (fg == 0)
-        self.running_bg[update_mask] = (
-            (1.0 - self.alpha) * self.running_bg[update_mask]
-            + self.alpha * gray[update_mask]
+        # Update running background (pixels where no motion)
+        not_fg = torch.logical_not(fg.bool())
+        self.running_bg[not_fg] = (
+            (1.0 - self.alpha) * self.running_bg[not_fg]
+            + self.alpha * gray[not_fg]
         )
 
-        fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, self.open_k)
-        fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, self.close_k)
+        # Move to CPU for morphology + connected components
+        fg_cpu = fg.cpu().numpy()
 
-        n, labels, stats, centroids = cv2.connectedComponentsWithStats(fg, 8)
+        fg_cpu = cv2.morphologyEx(fg_cpu, cv2.MORPH_OPEN, self.open_k)
+        fg_cpu = cv2.morphologyEx(fg_cpu, cv2.MORPH_CLOSE, self.close_k)
+
+        n, labels, stats, centroids = cv2.connectedComponentsWithStats(fg_cpu, 8)
         blobs = []
+        H, W = fg_cpu.shape
         max_area = H * W * 0.35
         for i in range(1, n):
             x, y, w, h, area = stats[i]
