@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { DashboardWebSocket } from '../services/ws';
 import { statsAPI, configAPI } from '../services/api';
-import { Cpu, Database, Activity, HardDrive, Wifi, ShieldAlert, Car, Navigation, FileText } from 'lucide-react';
+import { Cpu, Database, Activity, HardDrive, Wifi, ShieldAlert, Car, Navigation, FileText, PenTool, Save, X, Trash2 } from 'lucide-react';
 
 interface Vehicle {
   id: number;
@@ -42,6 +42,13 @@ export default function Dashboard() {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const latestFrameRef = useRef<string | null>(null);
+  
+  // Zone drawing state
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [currentZonePoints, setCurrentZonePoints] = useState<{x: number, y: number}[]>([]);
+  const [zoneName, setZoneName] = useState('禁停区');
+  const [existingZones, setExistingZones] = useState<any[]>([]);
+  const frameSizeRef = useRef({ w: 1280, h: 720, offX: 0, offY: 0, scaleW: 0, scaleH: 0 });
   
   // System Metrics
   const [metrics, setMetrics] = useState({
@@ -109,6 +116,19 @@ export default function Dashboard() {
     checkModels();
     const interval = setInterval(checkModels, 5000);
     return () => clearInterval(interval);
+  }, []);
+
+  // Load existing no-parking zones
+  useEffect(() => {
+    const loadZones = async () => {
+      try {
+        const res = await configAPI.getZones();
+        if (res.code === 200 && Array.isArray(res.data)) {
+          setExistingZones(res.data);
+        }
+      } catch {}
+    };
+    loadZones();
   }, []);
 
   // Connect WebSocket
@@ -202,6 +222,65 @@ export default function Dashboard() {
           const sx = (canvasW - sw) / 2;
           const sy = (canvasH - sh) / 2;
           ctx.drawImage(img, sx, sy, sw, sh);
+          
+          // Draw zones overlay
+          const fw = img.naturalWidth;
+          const fh = img.naturalHeight;
+          frameSizeRef.current = { w: fw, h: fh, offX: sx, offY: sy, scaleW: sw, scaleH: sh };
+          const drawZones = () => {
+            // Draw existing zones
+            for (const zone of existingZones) {
+              if (!zone.points || zone.points.length < 3) continue;
+              ctx.beginPath();
+              for (let i = 0; i < zone.points.length; i++) {
+                const px = sx + (zone.points[i][0]) * sw;
+                const py = sy + (zone.points[i][1]) * sh;
+                if (i === 0) ctx.moveTo(px, py);
+                else ctx.lineTo(px, py);
+              }
+              ctx.closePath();
+              ctx.fillStyle = 'rgba(239, 68, 68, 0.12)';
+              ctx.fill();
+              ctx.strokeStyle = 'rgba(239, 68, 68, 0.7)';
+              ctx.lineWidth = 2;
+              ctx.setLineDash([6, 3]);
+              ctx.stroke();
+              ctx.setLineDash([]);
+              // Label
+              const cx = zone.points.reduce((a: number, p: number[]) => a + p[0], 0) / zone.points.length;
+              const cy = zone.points.reduce((a: number, p: number[]) => a + p[1], 0) / zone.points.length;
+              ctx.fillStyle = 'rgba(239, 68, 68, 0.9)';
+              ctx.font = '12px monospace';
+              ctx.fillText(zone.name || '禁停区', sx + cx * sw, sy + cy * sh);
+            }
+            // Draw current polygon being drawn
+            if (currentZonePoints.length >= 2) {
+              ctx.beginPath();
+              ctx.setLineDash([4, 4]);
+              ctx.strokeStyle = 'rgba(34, 197, 94, 0.8)';
+              ctx.lineWidth = 2;
+              for (let i = 0; i < currentZonePoints.length; i++) {
+                const px = sx + currentZonePoints[i].x / fw * sw;
+                const py = sy + currentZonePoints[i].y / fh * sh;
+                if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+              }
+              ctx.stroke();
+              ctx.setLineDash([]);
+            }
+            // Draw vertices
+            for (const pt of currentZonePoints) {
+              const px = sx + pt.x / fw * sw;
+              const py = sy + pt.y / fh * sh;
+              ctx.beginPath();
+              ctx.arc(px, py, 5, 0, Math.PI * 2);
+              ctx.fillStyle = 'rgba(34, 197, 94, 0.9)';
+              ctx.fill();
+              ctx.strokeStyle = '#fff';
+              ctx.lineWidth = 1.5;
+              ctx.stroke();
+            }
+          };
+          drawZones();
         };
         img.src = currentFrame;
       }
@@ -264,6 +343,56 @@ export default function Dashboard() {
   const activeViolationsCount = violations.length;
   const activeAnomaliesCount = anomalies.length;
   const platedVehicles = vehicles.filter(v => v.plate);
+
+  // Zone drawing handlers
+  const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDrawing) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+    const fs = frameSizeRef.current;
+    if (fs.scaleW === 0) return;
+    // Convert to image pixel coordinates
+    const imgX = (clickX - fs.offX) / fs.scaleW * fs.w;
+    const imgY = (clickY - fs.offY) / fs.scaleH * fs.h;
+    if (imgX < 0 || imgY < 0 || imgX > fs.w || imgY > fs.h) return;
+    setCurrentZonePoints(prev => [...prev, { x: imgX, y: imgY }]);
+  };
+
+  const handleSaveZone = async () => {
+    if (currentZonePoints.length < 3) return;
+    const normPoints = currentZonePoints.map(p => [
+      p.x / frameSizeRef.current.w,
+      p.y / frameSizeRef.current.h,
+    ]);
+    const newZone = { name: zoneName || '禁停区', points: normPoints };
+    const updatedZones = [...existingZones, newZone];
+    try {
+      const res = await configAPI.updateZones(updatedZones);
+      if (res.code === 200) {
+        setExistingZones(updatedZones);
+        setCurrentZonePoints([]);
+        setIsDrawing(false);
+      }
+    } catch (err) {
+      alert('保存禁停区失败');
+    }
+  };
+
+  const handleClearCurrent = () => {
+    setCurrentZonePoints([]);
+  };
+
+  const handleRemoveAllZones = async () => {
+    try {
+      await configAPI.updateZones([]);
+      setExistingZones([]);
+      setCurrentZonePoints([]);
+      setIsDrawing(false);
+    } catch {}
+  };
 
   return (
     <div className="space-y-6">
@@ -339,7 +468,7 @@ export default function Dashboard() {
             </div>
           </div>
           
-          <div className="relative aspect-video rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 flex justify-center items-center">
+          <div className="relative aspect-video rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 flex justify-center items-center" onClick={handleCanvasClick} style={{ cursor: isDrawing ? 'crosshair' : 'default' }}>
             <canvas ref={canvasRef} className="w-full h-full block" />
             {!hasFrame && (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8 bg-slate-950">
@@ -497,9 +626,72 @@ export default function Dashboard() {
                     <span>监控源: Nvidia NVML</span>
                   </div>
                 </div>
-              )}
-            </div>
+            )}
           </div>
+
+          {/* 禁停区绘制工具栏 */}
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            {!isDrawing ? (
+              <button
+                type="button"
+                onClick={() => { setIsDrawing(true); setCurrentZonePoints([]); }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-500/20 text-rose-400 border border-rose-500/30 hover:bg-rose-500/30 transition-colors"
+              >
+                <PenTool size={14} /> 绘制禁停区
+              </button>
+            ) : (
+              <>
+                <input
+                  type="text"
+                  value={zoneName}
+                  onChange={e => setZoneName(e.target.value)}
+                  className="bg-slate-900/60 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-slate-200 w-28 outline-none focus:border-blue-500"
+                  placeholder="区域名称"
+                />
+                <span className="text-xs text-slate-400">
+                  {currentZonePoints.length} 个顶点
+                  {currentZonePoints.length < 3 ? ' (至少3个)' : ''}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleSaveZone}
+                  disabled={currentZonePoints.length < 3}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Save size={14} /> 保存
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearCurrent}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30 transition-colors"
+                >
+                  <X size={14} /> 清空当前
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setIsDrawing(false); setCurrentZonePoints([]); }}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700/30 text-slate-400 border border-slate-500/30 hover:bg-slate-600/30 transition-colors"
+                >
+                  取消绘制
+                </button>
+              </>
+            )}
+            {existingZones.length > 0 && (
+              <button
+                type="button"
+                onClick={handleRemoveAllZones}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20 transition-colors"
+              >
+                <Trash2 size={14} /> 清除全部 ({existingZones.length}个区域)
+              </button>
+            )}
+            {existingZones.length > 0 && !isDrawing && (
+              <span className="text-xs text-slate-500">
+                已配置: {existingZones.map(z => z.name).join(', ')}
+              </span>
+            )}
+          </div>
+        </div>
 
           {/* 实时硬件历史曲线图 */}
           <div className="glass-panel rounded-3xl p-5">
