@@ -181,14 +181,16 @@ class Sort:
             
         i = len(self.trackers)
         for trk in reversed(self.trackers):
-            d = trk.get_state()
-            if (trk.time_since_update < 1) and (trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits):
-                # Return tracking bounding box and object ID
-                ret.append(np.concatenate((d, [trk.id + 1])).reshape(1, -1))
-            i -= 1
-            # Remove dead tracklet
             if trk.time_since_update > self.max_age:
                 self.trackers.pop(i)
+                i -= 1
+                continue
+            d = trk.get_state()
+            # Output: matched in current frame, OR recently active (Kalman prediction)
+            confirmed = (trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits)
+            if confirmed and trk.time_since_update <= self.max_age:
+                ret.append(np.concatenate((d, [trk.id + 1])).reshape(1, -1))
+            i -= 1
                 
         if len(ret) > 0:
             return np.concatenate(ret)
@@ -249,7 +251,7 @@ class TrackingNode(PipelineNode):
         # Instantiate Sort tracker on enablement
         if self.tracker is None:
             logger.info("[Tracking] Initializing SORT Multi-Object Tracker (max_age=5, iou=0.3)")
-            self.tracker = Sort(max_age=5, min_hits=1, iou_threshold=0.3)
+            self.tracker = Sort(max_age=8, min_hits=1, iou_threshold=0.3)
             self._frame_count = 0
 
     def unload_model(self):

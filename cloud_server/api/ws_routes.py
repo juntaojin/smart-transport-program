@@ -1,7 +1,6 @@
 import time
 import cv2
 import numpy as np
-import base64
 import json
 import asyncio
 import torch
@@ -38,13 +37,18 @@ class ConnectionManager:
             logger.info(f"Client disconnected. Total: {len(self.active_connections)}")
 
     async def broadcast(self, message: dict):
-        # Broadcast JSON message
         payload = json.dumps(message)
         for connection in self.active_connections:
             try:
                 await connection.send_text(payload)
             except Exception:
-                # Connection might be dead
+                pass
+
+    async def broadcast_bytes(self, data: bytes):
+        for connection in self.active_connections:
+            try:
+                await connection.send_bytes(data)
+            except Exception:
                 pass
 
 dashboard_manager = ConnectionManager()
@@ -288,20 +292,18 @@ async def receive_stream(websocket: WebSocket, device_id: str):
             has_parking_zones = len(NO_PARKING_ZONES) > 0
             
             if not has_active_nodes and not has_parking_zones:
-                img_b64 = base64.b64encode(data).decode('utf-8')
-                
                 from cloud_server.utils.system_info import get_detailed_metrics
                 payload = {
                     "device_id": device_id,
                     "timestamp": time.time(),
                     "fps": calculate_fps(),
                     "congestion_level": "low",
-                    "image": f"data:image/jpeg;base64,{img_b64}",
                     "vehicles": [],
                     "violations": [],
                     "anomalies": [],
                     "system_metrics": get_detailed_metrics()
                 }
+                asyncio.create_task(dashboard_manager.broadcast_bytes(data))
                 asyncio.create_task(dashboard_manager.broadcast(payload))
                 last_broadcast_time = time.time()
                 
@@ -385,10 +387,6 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                     "world_coord": wc,
                 })
                 
-            if annotated_buffer is not None:
-                img_b64 = base64.b64encode(annotated_buffer).decode('utf-8')
-            else:
-                img_b64 = ""
             fps = calculate_fps()
             
             v_count = len(context.properties.get("vehicle_boxes", []))
@@ -406,7 +404,6 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                 "timestamp": context.timestamp,
                 "fps": fps,
                 "congestion_level": congestion,
-                "image": f"data:image/jpeg;base64,{img_b64}" if img_b64 else "",
                 "vehicles": vehicles_payload,
                 "violations": context.properties.get("violations", []),
                 "anomalies": context.properties.get("road_anomalies", []),
@@ -414,14 +411,14 @@ async def receive_stream(websocket: WebSocket, device_id: str):
             }
             
             asyncio.create_task(save_aggregated_stats(context.properties, device_id))
-            if has_viewers:
+            if has_viewers and annotated_buffer is not None:
+                asyncio.create_task(dashboard_manager.broadcast_bytes(bytes(annotated_buffer)))
                 asyncio.create_task(dashboard_manager.broadcast(payload))
             last_broadcast_time = time.time()
             
             if fc % 30 == 0:
                 logger.info(
-                    f"[Timing {device_id}] frame #{fc} mode={mode} | "
-                    f"payload img: {len(img_b64)/1024:.0f}KB"
+                    f"[Timing {device_id}] frame #{fc} mode={mode}"
                 )
 
     except WebSocketDisconnect:

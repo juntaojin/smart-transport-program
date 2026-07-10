@@ -137,12 +137,17 @@ export default function Dashboard() {
   }, []);
 
   // Connect WebSocket
+  const blobUrlRef = useRef<string | null>(null);
   useEffect(() => {
+    const onImage = (blob: Blob) => {
+      const url = URL.createObjectURL(blob);
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = url;
+      latestFrameRef.current = url;
+      if (!hasFrame) setHasFrame(true);
+    };
+
     const onMessage = (data: any) => {
-      if (data.image) {
-        latestFrameRef.current = data.image;
-        if (!hasFrame) setHasFrame(true);
-      }
       if (data.fps !== undefined) setFps(data.fps);
       if (data.congestion_level) setCongestion(data.congestion_level);
       if (data.vehicles) setVehicles(data.vehicles);
@@ -171,12 +176,16 @@ export default function Dashboard() {
       setWsStatus(status);
     };
 
-    wsRef.current = new DashboardWebSocket(onMessage, onStatus);
+    wsRef.current = new DashboardWebSocket(onMessage, onImage, onStatus);
     wsRef.current.connect();
 
     return () => {
       if (wsRef.current) {
         wsRef.current.stop();
+      }
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
       }
     };
   }, []);

@@ -3,17 +3,19 @@ export class DashboardWebSocket {
   private ws: WebSocket | null = null;
   private reconnectTimer: any = null;
   private onMessageCallback: (data: any) => void;
+  private onImageCallback: (blob: Blob) => void;
   private onStatusCallback: (status: 'connecting' | 'connected' | 'disconnected') => void;
   private active = false;
 
   constructor(
     onMessage: (data: any) => void,
+    onImage: (blob: Blob) => void,
     onStatus: (status: 'connecting' | 'connected' | 'disconnected') => void
   ) {
     this.onMessageCallback = onMessage;
+    this.onImageCallback = onImage;
     this.onStatusCallback = onStatus;
     
-    // Resolve WS address dynamically if not hardcoded
     const envUrl = import.meta.env.VITE_WS_URL;
     if (envUrl) {
       this.url = envUrl;
@@ -30,6 +32,7 @@ export class DashboardWebSocket {
 
     try {
       this.ws = new WebSocket(this.url);
+      this.ws.binaryType = 'blob';
       
       this.ws.onopen = () => {
         this.onStatusCallback('connected');
@@ -37,8 +40,12 @@ export class DashboardWebSocket {
       };
 
       this.ws.onmessage = (event) => {
+        if (event.data instanceof Blob) {
+          this.onImageCallback(event.data);
+          return;
+        }
         try {
-          const data = JSON.parse(event.data);
+          const data = JSON.parse(event.data as string);
           this.onMessageCallback(data);
         } catch (err) {
           console.error('Error parsing WS message:', err);
