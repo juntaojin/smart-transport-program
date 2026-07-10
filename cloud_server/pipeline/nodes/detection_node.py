@@ -19,13 +19,6 @@ class VehicleDetectionNode(PipelineNode):
     def _do_process(self, context: FrameContext) -> FrameContext:
         self._frame_count += 1
 
-        # 隔帧检测：每2帧跑一次YOLO，奇数帧清空让SORT输出预测
-        if self._frame_count % 2 != 0:
-            context.properties["vehicle_boxes"] = []
-            context.properties["vehicle_classes"] = []
-            context.properties["vehicle_confidences"] = []
-            return context
-
         try:
             vehicles = detect_vehicles(context.frame)
         except NotImplementedError:
