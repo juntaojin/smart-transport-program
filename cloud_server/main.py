@@ -51,6 +51,9 @@ async def lifespan(app: FastAPI):
     pipeline.add_node(ViolationDetectionNode())
 
     # All nodes start disabled by default — enable via frontend or API
+    # 车辆检测和跟踪默认开启（前端核心功能依赖）
+    pipeline.toggle_node("vehicle_detection", True)
+    pipeline.toggle_node("tracking", True)
     app.state.pipeline = pipeline
     registered = list(pipeline.nodes.keys())
     logger.info(f"Pipeline nodes registered: {registered}")

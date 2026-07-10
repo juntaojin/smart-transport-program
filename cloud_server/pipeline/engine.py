@@ -37,7 +37,7 @@ class PipelineNode:
 
 
 class InferencePipeline:
-    TRACK_ONLY_NODES = {"vehicle_detection", "tracking", "transform"}
+    TRACK_ONLY_NODES = {"vehicle_detection", "tracking", "transform", "plate_ocr"}
 
     def __init__(self):
         self.nodes: dict[str, PipelineNode] = {}
