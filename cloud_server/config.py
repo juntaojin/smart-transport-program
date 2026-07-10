@@ -16,7 +16,7 @@ defaults = {
         "video": {"width": 1280, "height": 720, "fps": 15, "jpeg_quality": 80,
                    "capture_fps": 20, "stream_broadcast_fps": 15, "rtsp_broadcast_fps": 20},
         "models": {
-            "yolo_model_path": "models/yolo26n.pt",
+            "yolo_model_path": "models/yolo26s.pt",
             "yolo_confidence": 0.25,
             "yolo_iou": 0.45,
             "yolo_imgsz": 640,

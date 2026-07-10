@@ -32,7 +32,7 @@ cloud_server:
     
   models:
     # YOLO 目标检测模型路径 (如果不存在会自动下载)
-    yolo_model_path: "models/yolo26n.pt"
+    yolo_model_path: "models/yolo26s.pt"
     # YOLO 目标检测默认置信度阈值
     yolo_confidence: 0.25
     # YOLO NMS IoU 阈值

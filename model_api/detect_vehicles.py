@@ -16,13 +16,13 @@ def _get_model():
     global _model
     if _model is None:
         root_dir = os.path.dirname(os.path.dirname(__file__))
-        model_path = os.path.join(root_dir, "models", "yolo26n.pt")
+        model_path = os.path.join(root_dir, "models", "yolo26s.pt")
         if not os.path.exists(model_path):
-            model_path = os.path.join(os.path.dirname(__file__), "weights", "yolo26n.pt")
+            model_path = os.path.join(os.path.dirname(__file__), "weights", "yolo26s.pt")
         if not os.path.exists(model_path):
-            model_path = os.path.join(os.path.dirname(__file__), "yolo26n.pt")
+            model_path = os.path.join(os.path.dirname(__file__), "yolo26s.pt")
         if not os.path.exists(model_path):
-            model_path = "yolo26n.pt"
+            model_path = "yolo26s.pt"
         _model = YOLO(model_path)
     return _model
 
