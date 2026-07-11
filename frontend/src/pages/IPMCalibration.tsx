@@ -35,6 +35,8 @@ export default function IPMCalibration() {
   const [laneId, setLaneId] = useState('');
   const [cameraPoints, setCameraPoints] = useState<Point[]>([]);
   const [worldPoints, setWorldPoints] = useState<Point[]>([]);
+  const camPtsRef = useRef(cameraPoints);
+  camPtsRef.current = cameraPoints;
   const [calibratedLanes, setCalibratedLanes] = useState<Record<string, string[]>>({});
   const [hasFrame, setHasFrame] = useState(false);
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
@@ -129,7 +131,7 @@ export default function IPMCalibration() {
           const sx = (cw - sw) / 2, sy = (ch - sh) / 2;
           camSizeRef.current = { w: img.naturalWidth, h: img.naturalHeight };
           ctx.drawImage(img, sx, sy, sw, sh);
-          drawPoints(ctx, cameraPoints, sx, sy, sw, sh, img.naturalWidth, img.naturalHeight);
+          drawPoints(ctx, camPtsRef.current, sx, sy, sw, sh, img.naturalWidth, img.naturalHeight);
         };
         img.src = f;
       }
@@ -137,7 +139,7 @@ export default function IPMCalibration() {
     };
     render();
     return () => { animating = false; };
-  }, [cameraPoints]);
+  }, []);
 
   // Render world canvas (whiteboard)
   useEffect(() => {
