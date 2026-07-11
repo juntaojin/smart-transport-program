@@ -1,2 +1,1 @@
-# IPM 逆透视变换服务
-# 将摄像头斜视坐标映射到俯视道路平面坐标,供热力图渲染
+"""IPM (Inverse Perspective Mapping) 逆透视变换服务"""
