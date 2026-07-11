@@ -4,15 +4,15 @@ import json
 import threading
 import asyncio
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from loguru import logger
 
 from cloud_server.pipeline.context import FrameContext
-from cloud_server.api.ws_routes import dashboard_manager, calculate_fps, annotate_frame, active_devices
+from cloud_server.api.ws_routes import dashboard_manager, calculate_fps, active_devices
 from cloud_server.config import (
     CONGESTION_HIGH,
     CONGESTION_MEDIUM,
-    JPEG_QUALITY,
     RTSP_BROADCAST_FPS,
     RTSP_MJPEG_QSCALE,
     VIDEO_FRAME_HEIGHT,
@@ -110,6 +110,75 @@ class RTSPStreamManager:
             logger.error("ffmpeg not found. Install ffmpeg or add to PATH.")
             return None
 
+    def _execute_pipeline(self, frame, device_id, frame_count):
+        mode = "full" if frame_count % 15 == 0 else "track"
+        context = FrameContext(
+            frame_data=frame,
+            timestamp=time.time(),
+            device_id=device_id,
+        )
+        return mode, self.pipeline.execute(context, mode=mode)
+
+    def _update_plate_cache(self, device_id, mode, context):
+        if mode != "full":
+            return
+        track_ids = context.properties.get("track_ids", [])
+        plates = context.properties.get("plate_numbers", [])
+        device_plates = self._plate_db.setdefault(device_id, {})
+        active_track_ids = {track_id for track_id in track_ids if track_id is not None}
+        for stale_track_id in set(device_plates) - active_track_ids:
+            device_plates.pop(stale_track_id, None)
+        for track_id, plate in zip(track_ids, plates):
+            if plate:
+                device_plates[track_id] = plate
+
+    def _build_payload(self, device_id, context):
+        if context is None:
+            return {
+                "device_id": device_id,
+                "timestamp": time.time(),
+                "fps": calculate_fps(),
+                "congestion_level": "low",
+                "vehicles": [],
+                "violations": [],
+                "anomalies": [],
+                "system_metrics": self._get_metrics(),
+            }
+
+        properties = context.properties
+        device_plates = self._plate_db.get(device_id, {})
+        track_ids = properties.get("track_ids", [])
+        boxes = properties.get("vehicle_boxes", [])
+        classes = properties.get("vehicle_classes", [])
+        vehicles = []
+        for index, box in enumerate(boxes):
+            track_id = track_ids[index] if index < len(track_ids) else None
+            class_name = classes[index] if index < len(classes) else "vehicle"
+            vehicles.append({
+                "id": track_id,
+                "class": class_name,
+                "box": [float(value) for value in box],
+                "plate": device_plates.get(track_id, "") if track_id is not None else "",
+            })
+
+        vehicle_count = len(boxes)
+        congestion = "low"
+        if vehicle_count > CONGESTION_HIGH:
+            congestion = "high"
+        elif vehicle_count >= CONGESTION_MEDIUM:
+            congestion = "medium"
+
+        return {
+            "device_id": device_id,
+            "timestamp": context.timestamp,
+            "fps": calculate_fps(),
+            "congestion_level": congestion,
+            "vehicles": vehicles,
+            "violations": properties.get("violations", []),
+            "anomalies": properties.get("road_anomalies", []),
+            "system_metrics": self._get_metrics(),
+        }
+
     def _stream_worker(self, device_id, rtsp_url):
         proc = self._open_ffmpeg(rtsp_url)
         if proc is None:
@@ -127,6 +196,10 @@ class RTSPStreamManager:
         source_frame_count = 0
         broadcast_frame_count = 0
         broadcast_byte_count = 0
+        inference_completed_count = 0
+        inference_future = None
+        latest_context = None
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"inference-{device_id}")
 
         try:
             while True:
@@ -178,89 +251,44 @@ class RTSPStreamManager:
                         path_name = "JPEG passthrough" if using_fast_path else "AI processing"
                         logger.info(f"RTSP stream {device_id} switched to {path_name} path")
                         was_using_fast_path = using_fast_path
+                        latest_context = None
 
                     # A configured parking zone does not need server-side image processing by
                     # itself. The dashboard draws zones as an overlay, and violation analysis
                     # only becomes meaningful when its pipeline nodes are enabled.
                     if using_fast_path:
-                        # Fast path: passthrough original JPEG
-                        payload = {
-                            "device_id": device_id,
-                            "timestamp": time.time(),
-                            "fps": calculate_fps(),
-                            "congestion_level": "low",
-                            "vehicles": [],
-                            "violations": [],
-                            "anomalies": [],
-                            "system_metrics": self._get_metrics()
-                        }
+                        payload = self._build_payload(device_id, None)
                         self._broadcast_bytes(jpeg_bytes)
                         self._broadcast(payload)
                         sent_byte_count = len(jpeg_bytes)
                     else:
-                        # Slow path: decode → pipeline → annotate → re-encode
-                        nparr = np.frombuffer(jpeg_bytes, np.uint8)
-                        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                        if frame is None:
-                            continue
-                        frame = cv2.resize(frame, (1280, 720))
+                        # Video transport never waits for inference. Consume a finished
+                        # result, then submit only the newest frame when the worker is idle.
+                        if inference_future is not None and inference_future.done():
+                            try:
+                                mode, latest_context = inference_future.result()
+                                self._update_plate_cache(device_id, mode, latest_context)
+                                inference_completed_count += 1
+                            except Exception as exc:
+                                logger.error(f"RTSP inference failed for {device_id}: {exc}")
+                            inference_future = None
 
-                        context = FrameContext(frame_data=frame, timestamp=time.time(), device_id=device_id)
-                        self._frame_counters[device_id] = self._frame_counters.get(device_id, 0) + 1
-                        fc = self._frame_counters[device_id]
-                        mode = "full" if fc % 15 == 0 else "track"
-                        context = self.pipeline.execute(context, mode=mode)
-                        annotated = annotate_frame(frame, context.properties)
-                        success, buffer = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-                        if not success:
-                            continue
+                        if inference_future is None:
+                            frame = cv2.imdecode(np.frombuffer(jpeg_bytes, np.uint8), cv2.IMREAD_COLOR)
+                            if frame is not None:
+                                self._frame_counters[device_id] = self._frame_counters.get(device_id, 0) + 1
+                                frame_count = self._frame_counters[device_id]
+                                inference_future = executor.submit(
+                                    self._execute_pipeline,
+                                    frame,
+                                    device_id,
+                                    frame_count,
+                                )
 
-                        if mode == "full":
-                            track_ids = context.properties.get("track_ids", [])
-                            plates = context.properties.get("plate_numbers", [])
-                            if device_id not in self._plate_db:
-                                self._plate_db[device_id] = {}
-                            for tid, plate in zip(track_ids, plates):
-                                if plate:
-                                    self._plate_db[device_id][tid] = plate
-
-                        dev_plates = self._plate_db.get(device_id, {})
-                        track_ids = context.properties.get("track_ids", [])
-                        vehicle_boxes = context.properties.get("vehicle_boxes", [])
-                        vehicle_classes = context.properties.get("vehicle_classes", [])
-                        vehicles_payload = []
-                        for i, box in enumerate(vehicle_boxes):
-                            tid = track_ids[i] if i < len(track_ids) else None
-                            cls_name = vehicle_classes[i] if i < len(vehicle_classes) else "vehicle"
-                            plate = dev_plates.get(tid, "") if tid is not None else ""
-                            vehicles_payload.append({
-                                "id": tid,
-                                "class": cls_name,
-                                "box": [float(c) for c in box],
-                                "plate": plate
-                            })
-
-                        fps_val = calculate_fps()
-                        v_count = len(context.properties.get("vehicle_boxes", []))
-                        congestion = "low"
-                        if v_count > CONGESTION_HIGH:
-                            congestion = "high"
-                        elif v_count >= CONGESTION_MEDIUM:
-                            congestion = "medium"
-
-                        payload = {
-                            "device_id": device_id,
-                            "timestamp": context.timestamp,
-                            "fps": fps_val,
-                            "congestion_level": congestion,
-                            "vehicles": vehicles_payload,
-                            "violations": context.properties.get("violations", []),
-                            "anomalies": context.properties.get("road_anomalies", []),
-                            "system_metrics": self._get_metrics()
-                        }
-                        self._broadcast_bytes(bytes(buffer))
+                        payload = self._build_payload(device_id, latest_context)
+                        self._broadcast_bytes(jpeg_bytes)
                         self._broadcast(payload)
-                        sent_byte_count = len(buffer)
+                        sent_byte_count = len(jpeg_bytes)
 
                     last_broadcast_time = time.time()
                     broadcast_frame_count += 1
@@ -273,12 +301,15 @@ class RTSPStreamManager:
                         broadcast_mbps = broadcast_byte_count * 8 / stats_elapsed / 1_000_000
                         logger.info(
                             f"[RTSP Stats {device_id}] source={source_fps:.1f} fps, "
-                            f"broadcast={broadcast_fps:.1f} fps, {broadcast_mbps:.1f} Mbps"
+                            f"broadcast={broadcast_fps:.1f} fps, "
+                            f"inference={inference_completed_count / stats_elapsed:.1f} fps, "
+                            f"{broadcast_mbps:.1f} Mbps"
                         )
                         stats_started_at = time.monotonic()
                         source_frame_count = 0
                         broadcast_frame_count = 0
                         broadcast_byte_count = 0
+                        inference_completed_count = 0
 
                 except Exception as e:
                     logger.error(f"RTSP frame processing error for {device_id}: {e}")
@@ -287,6 +318,9 @@ class RTSPStreamManager:
         except Exception as e:
             logger.error(f"RTSP stream worker fatal error for {device_id}: {e}")
         finally:
+            if inference_future is not None:
+                inference_future.cancel()
+            executor.shutdown(wait=False)
             proc.terminate()
             proc.wait()
             active_devices.pop(device_id, None)

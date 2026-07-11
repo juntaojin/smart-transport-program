@@ -51,9 +51,11 @@ export default function Dashboard() {
   const frameSizeRef = useRef({ w: 1280, h: 720, offX: 0, offY: 0, scaleW: 0, scaleH: 0 });
   const zonesForRender = useRef<any[]>([]);
   const pointsForRender = useRef<{x: number, y: number}[]>([]);
+  const vehiclesForRender = useRef<Vehicle[]>([]);
   // Keep refs in sync with state for render closure
   zonesForRender.current = existingZones;
   pointsForRender.current = currentZonePoints;
+  vehiclesForRender.current = vehicles;
   
   // System Metrics
   const [metrics, setMetrics] = useState({
@@ -246,6 +248,32 @@ export default function Dashboard() {
           const fw = img.naturalWidth;
           const fh = img.naturalHeight;
           frameSizeRef.current = { w: fw, h: fh, offX: sx, offY: sy, scaleW: sw, scaleH: sh };
+          // AI results update independently from the video. Reuse the latest boxes
+          // on every incoming frame so slow inference never stalls video playback.
+          for (const vehicle of vehiclesForRender.current) {
+            if (!vehicle.box || vehicle.box.length < 4) continue;
+            const [x1, y1, x2, y2] = vehicle.box;
+            const left = sx + x1 / fw * sw;
+            const top = sy + y1 / fh * sh;
+            const width = (x2 - x1) / fw * sw;
+            const height = (y2 - y1) / fh * sh;
+            ctx.strokeStyle = '#22c55e';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(left, top, width, height);
+            const label = [
+              vehicle.id != null ? `ID:${vehicle.id}` : '',
+              vehicle.class,
+              vehicle.plate || '',
+            ].filter(Boolean).join(' ');
+            if (label) {
+              ctx.font = '12px monospace';
+              const labelWidth = ctx.measureText(label).width + 8;
+              ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+              ctx.fillRect(left, Math.max(0, top - 18), labelWidth, 18);
+              ctx.fillStyle = '#86efac';
+              ctx.fillText(label, left + 4, Math.max(12, top - 5));
+            }
+          }
           const drawZones = () => {
             const zones = zonesForRender.current;
             const points = pointsForRender.current;
