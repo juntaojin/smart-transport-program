@@ -27,28 +27,6 @@ SAND_TABLE_CAMERAS = [
 ]
 
 
-def _read_jpeg_frame(stdout):
-    """从ffmpeg stdout读取一帧完整的JPEG"""
-    buf = bytearray()
-    soi_pos = -1
-    while True:
-        chunk = stdout.read(8192)
-        if not chunk:
-            return None
-        buf.extend(chunk)
-        # 找SOI
-        if soi_pos < 0:
-            soi_pos = buf.find(b'\xff\xd8')
-            if soi_pos < 0:
-                buf = bytearray()
-                continue
-            if soi_pos > 0:
-                buf = buf[soi_pos:]
-                soi_pos = 0
-        # 找EOI
-        eoi_pos = buf.find(b'\xff\xd9', soi_pos + 2)
-        if eoi_pos >= 0:
-            return bytes(buf[:eoi_pos + 2])
 
 
 class RTSPStreamManager:
@@ -133,6 +111,7 @@ class RTSPStreamManager:
         logger.info(f"RTSP FFmpeg capture opened: {device_id}")
         last_broadcast_time = 0.0
         broadcast_interval = 1.0 / RTSP_BROADCAST_FPS
+        buf = bytearray()
 
         try:
             while True:
@@ -140,7 +119,25 @@ class RTSPStreamManager:
                     if device_id not in self.active_streams or not self.active_streams[device_id]["active"]:
                         break
 
-                jpeg_bytes = _read_jpeg_frame(proc.stdout)
+                # Read one complete JPEG frame (buffer persists across loops to avoid dropping frames)
+                jpeg_bytes = None
+                while True:
+                    soi = buf.find(b'\xff\xd8')
+                    if soi >= 0:
+                        eoi = buf.find(b'\xff\xd9', soi + 2)
+                        if eoi >= 0:
+                            jpeg_bytes = bytes(buf[soi:eoi + 2])
+                            del buf[:eoi + 2]
+                            break
+                    chunk = proc.stdout.read(8192)
+                    if not chunk:
+                        jpeg_bytes = None
+                        break
+                    if soi < 0:
+                        if b'\xff\xd8' in chunk:
+                            buf = bytearray(chunk[chunk.find(b'\xff\xd8'):])
+                            continue
+                    buf.extend(chunk)
                 if jpeg_bytes is None:
                     logger.warning(f"RTSP stream ended for {device_id}, reconnecting...")
                     proc.terminate()
