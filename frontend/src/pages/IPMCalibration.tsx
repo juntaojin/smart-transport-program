@@ -89,7 +89,13 @@ export default function IPMCalibration() {
       frameRef.current = url;
       if (!hasFrame) setHasFrame(true);
     };
-    const onMessage = () => {};
+    const onMessage = (data: any) => {
+      if (data.image) {
+        if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
+        frameRef.current = data.image;
+        if (!hasFrame) setHasFrame(true);
+      }
+    };
     const onStatus = (s: any) => setWsStatus(s);
     wsRef.current = new DashboardWebSocket(onMessage, onImage, onStatus);
     wsRef.current.connect();
