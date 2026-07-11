@@ -44,6 +44,8 @@ cloud_server:
     yolo_imgsz: 640
     # Grounding DINO 零样本异常检测阈值
     anomaly_threshold: 0.25
+    anomaly_model_path: models/yolo26s.pt
+    anomaly_device: auto
     
   zones:
     # 禁停多边形区域配置 (点坐标为归一化比例 [0.0, 1.0])

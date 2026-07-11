@@ -1,9 +1,14 @@
 from loguru import logger
 
-from cloud_server.config import ANOMALY_THRESHOLD
+from cloud_server.config import ANOMALY_DEVICE, ANOMALY_MODEL_PATH, ANOMALY_THRESHOLD
 from cloud_server.pipeline.engine import PipelineNode
 from cloud_server.pipeline.context import FrameContext
-from model_api import detect_anomalies
+from model_api import (
+    detect_anomalies,
+    load_anomaly_model,
+    reset_anomaly_state,
+    unload_anomaly_model,
+)
 
 
 class AnomalyDetectionNode(PipelineNode):
@@ -13,18 +18,25 @@ class AnomalyDetectionNode(PipelineNode):
 
     def load_model(self):
         self._frame_count = 0
+        reset_anomaly_state()
+        if not load_anomaly_model(ANOMALY_MODEL_PATH, ANOMALY_DEVICE):
+            raise RuntimeError(
+                f"Failed to load anomaly model from {ANOMALY_MODEL_PATH}"
+            )
         logger.info(
-            f"[AnomalyDetection] Node ready (stateful function-call mode, threshold={ANOMALY_THRESHOLD})"
+            f"[AnomalyDetection] Node ready (threshold={ANOMALY_THRESHOLD}, "
+            f"device={ANOMALY_DEVICE})"
         )
 
     def unload_model(self):
+        unload_anomaly_model()
         logger.info("[AnomalyDetection] Node disabled")
 
     def _do_process(self, context: FrameContext) -> FrameContext:
         self._frame_count += 1
 
         try:
-            anomalies = detect_anomalies(context.frame)
+            anomalies = detect_anomalies(context.frame, device_id=context.device_id)
         except NotImplementedError:
             logger.error("[AnomalyDetection] detect_anomalies() is not implemented yet")
             context.properties["road_anomalies"] = []

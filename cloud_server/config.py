@@ -21,7 +21,9 @@ defaults = {
             "yolo_confidence": 0.25,
             "yolo_iou": 0.45,
             "yolo_imgsz": 640,
-            "anomaly_threshold": 0.25
+            "anomaly_threshold": 0.25,
+            "anomaly_model_path": "models/yolo26s.pt",
+            "anomaly_device": "auto"
         },
         "zones": {
             "no_parking": [
@@ -94,6 +96,12 @@ YOLO_CONFIDENCE = c_server["models"]["yolo_confidence"]
 YOLO_IOU = c_server["models"].get("yolo_iou", 0.45)
 YOLO_IMGSZ = c_server["models"].get("yolo_imgsz", 640)
 ANOMALY_THRESHOLD = c_server["models"].get("anomaly_threshold", 0.25)
+anomaly_model_path = c_server["models"].get("anomaly_model_path", "models/yolo26s.pt")
+if not os.path.isabs(anomaly_model_path):
+    ANOMALY_MODEL_PATH = os.path.join(BASE_DIR, anomaly_model_path)
+else:
+    ANOMALY_MODEL_PATH = anomaly_model_path
+ANOMALY_DEVICE = c_server["models"].get("anomaly_device", "auto")
 
 # No Parking Zones (map to tuples for points to keep pipeline logic unchanged)
 raw_zones = c_server["zones"]["no_parking"]
