@@ -52,10 +52,12 @@ export default function Dashboard() {
   const zonesForRender = useRef<any[]>([]);
   const pointsForRender = useRef<{x: number, y: number}[]>([]);
   const vehiclesForRender = useRef<Vehicle[]>([]);
+  const anomaliesForRender = useRef<Anomaly[]>([]);
   // Keep refs in sync with state for render closure
   zonesForRender.current = existingZones;
   pointsForRender.current = currentZonePoints;
   vehiclesForRender.current = vehicles;
+  anomaliesForRender.current = anomalies;
   
   // System Metrics
   const [metrics, setMetrics] = useState({
@@ -273,6 +275,26 @@ export default function Dashboard() {
               ctx.fillStyle = '#86efac';
               ctx.fillText(label, left + 4, Math.max(12, top - 5));
             }
+          }
+          for (const anomaly of anomaliesForRender.current) {
+            if (!anomaly.box || anomaly.box.length < 4) continue;
+            const [x1, y1, x2, y2] = anomaly.box;
+            const left = sx + x1 / fw * sw;
+            const top = sy + y1 / fh * sh;
+            const width = (x2 - x1) / fw * sw;
+            const height = (y2 - y1) / fh * sh;
+            ctx.strokeStyle = '#ef4444';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([]);
+            ctx.strokeRect(left, top, width, height);
+            const label = `${anomaly.label || 'road_anomaly'} ${(anomaly.confidence * 100).toFixed(0)}%`;
+            ctx.font = 'bold 12px monospace';
+            const labelWidth = ctx.measureText(label).width + 8;
+            const labelTop = Math.max(0, top - 20);
+            ctx.fillStyle = 'rgba(127, 29, 29, 0.9)';
+            ctx.fillRect(left, labelTop, labelWidth, 20);
+            ctx.fillStyle = '#fecaca';
+            ctx.fillText(label, left + 4, labelTop + 14);
           }
           const drawZones = () => {
             const zones = zonesForRender.current;
@@ -846,7 +868,7 @@ export default function Dashboard() {
                   <div>
                     <span className="text-xs bg-amber-500 text-dark-900 font-semibold px-2 py-0.5 rounded mr-2">异常物</span>
                     <strong className="text-sm text-slate-200 capitalize">{a.label}</strong>
-                    <p className="text-xs text-slate-400 mt-1">坐标位置: x={(a.box[0]+a.box[2]/2).toFixed(0)}, y={a.box[3].toFixed(0)}</p>
+                    <p className="text-xs text-slate-400 mt-1">坐标位置: x={((a.box[0] + a.box[2]) / 2).toFixed(0)}, y={a.box[3].toFixed(0)}</p>
                   </div>
                   <div className="text-right">
                     <span className="text-xs text-slate-400">置信度</span>
