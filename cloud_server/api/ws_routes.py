@@ -16,7 +16,7 @@ from cloud_server.database.orm_models import (
     PlateRecord, VehicleStat, ParkingViolation, RoadAnomaly, SystemMetric
 )
 from cloud_server.config import (
-    VIDEO_FPS, CONGESTION_HIGH, CONGESTION_MEDIUM, CONGESTION_LOW, NO_PARKING_ZONES, JPEG_QUALITY,
+    VIDEO_FPS, CONGESTION_HIGH, CONGESTION_MEDIUM, CONGESTION_LOW, JPEG_QUALITY,
     STREAM_BROADCAST_FPS,
 )
 
@@ -290,9 +290,10 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                 continue
             
             has_active_nodes = any(node.enabled for node in pipeline.nodes.values())
-            has_parking_zones = len(NO_PARKING_ZONES) > 0
-            
-            if not has_active_nodes and not has_parking_zones:
+
+            # Parking-zone polygons are rendered by the dashboard. They only require
+            # server-side frame processing when a pipeline node is actually enabled.
+            if not has_active_nodes:
                 from cloud_server.utils.system_info import get_detailed_metrics
                 payload = {
                     "device_id": device_id,

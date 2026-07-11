@@ -9,7 +9,7 @@ from loguru import logger
 
 from cloud_server.pipeline.context import FrameContext
 from cloud_server.api.ws_routes import dashboard_manager, calculate_fps, annotate_frame, active_devices
-from cloud_server.config import CONGESTION_HIGH, CONGESTION_MEDIUM, NO_PARKING_ZONES, JPEG_QUALITY, RTSP_BROADCAST_FPS
+from cloud_server.config import CONGESTION_HIGH, CONGESTION_MEDIUM, JPEG_QUALITY, RTSP_BROADCAST_FPS
 
 SAND_TABLE_CAMERAS = [
     {"id": "live1", "name": "桥面", "url": "rtsp://10.126.59.120:8554/live/live1"},
@@ -112,6 +112,7 @@ class RTSPStreamManager:
         last_broadcast_time = 0.0
         broadcast_interval = 1.0 / RTSP_BROADCAST_FPS
         buf = bytearray()
+        was_using_fast_path = None
 
         try:
             while True:
@@ -157,9 +158,16 @@ class RTSPStreamManager:
 
                 try:
                     has_active_nodes = any(node.enabled for node in self.pipeline.nodes.values())
-                    has_parking_zones = len(NO_PARKING_ZONES) > 0
+                    using_fast_path = not has_active_nodes
+                    if using_fast_path != was_using_fast_path:
+                        path_name = "JPEG passthrough" if using_fast_path else "AI processing"
+                        logger.info(f"RTSP stream {device_id} switched to {path_name} path")
+                        was_using_fast_path = using_fast_path
 
-                    if not has_active_nodes and not has_parking_zones:
+                    # A configured parking zone does not need server-side image processing by
+                    # itself. The dashboard draws zones as an overlay, and violation analysis
+                    # only becomes meaningful when its pipeline nodes are enabled.
+                    if using_fast_path:
                         # Fast path: passthrough original JPEG
                         payload = {
                             "device_id": device_id,
