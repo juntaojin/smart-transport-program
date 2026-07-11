@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from loguru import logger
 import uvicorn
 
+from cloud_server.config import BASE_DIR
 from cloud_server.database.connection import engine, Base
 from cloud_server.api.middleware import setup_middleware
 from cloud_server.api.rest_routes import router as rest_router
@@ -26,6 +27,28 @@ from cloud_server.pipeline.nodes.ocr_node import PlateRecognitionNode
 from cloud_server.pipeline.nodes.anomaly_node import AnomalyDetectionNode
 from cloud_server.pipeline.nodes.violation_node import ViolationDetectionNode
 from cloud_server.pipeline.nodes.transform_node import CoordinateTransformNode
+
+
+# Keep runtime logs in a project-relative directory on both Windows and macOS.
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+logger.add(
+    os.path.join(LOG_DIR, "server_{time:YYYY-MM-DD}.log"),
+    encoding="utf-8",
+    rotation="20 MB",
+    retention="14 days",
+    enqueue=True,
+)
+logger.add(
+    os.path.join(LOG_DIR, "rtsp_performance_{time:YYYY-MM-DD}.log"),
+    encoding="utf-8",
+    rotation="10 MB",
+    retention="14 days",
+    enqueue=True,
+    filter=lambda record: record["message"].startswith("[RTSP Stats"),
+    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {message}",
+)
+logger.info(f"Runtime logs will be written to: {LOG_DIR}")
 
 
 @asynccontextmanager

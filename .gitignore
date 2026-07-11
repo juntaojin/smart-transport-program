@@ -8,5 +8,7 @@ dist/
 data/
 models/*.pt
 certs/
+logs/*.log
+!logs/.gitkeep
 *.egg-info/
 frontend/node_modules/
