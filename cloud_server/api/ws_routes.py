@@ -309,10 +309,7 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                 last_broadcast_time = time.time()
                 
                 if frame_no % 30 == 0:
-                    logger.info(
-                        f"[Timing {device_id}] frame #{frame_no} (fast) | "
-                    f"payload img: {len(img_b64)/1024:.0f}KB" if img_b64 else "no viewers"
-                    )
+                    logger.info(f"[Timing {device_id}] frame #{frame_no} (fast)")
                 continue
 
             # Skip if still processing previous frame

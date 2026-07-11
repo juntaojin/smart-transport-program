@@ -148,6 +148,10 @@ export default function Dashboard() {
     };
 
     const onMessage = (data: any) => {
+      if (data.image) {
+        latestFrameRef.current = data.image;
+        if (!hasFrame) setHasFrame(true);
+      }
       if (data.fps !== undefined) setFps(data.fps);
       if (data.congestion_level) setCongestion(data.congestion_level);
       if (data.vehicles) setVehicles(data.vehicles);
