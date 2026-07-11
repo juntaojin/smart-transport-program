@@ -2,6 +2,7 @@ import os
 import threading
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
 
 BANK_FRAMES = 30
@@ -79,38 +80,71 @@ def _box_ioa(blob_box, yolo_box):
 
 
 class _ChangeDetector:
+    """GPU-accelerated background subtraction + foreground blob detector.
+
+    Uses PyTorch CUDA for BGR→Gray, absdiff, threshold, and running-background
+    update.  Only morphology and connected-components stay on CPU (no GPU
+    equivalent in OpenCV's Python bindings).
+    """
+
+    _GRAY_WEIGHTS = torch.tensor([0.1140, 0.5870, 0.2989], dtype=torch.float32)
+
     def __init__(self):
         self.min_area = MIN_AREA
-        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
-            history=500, varThreshold=16, detectShadows=True
-        )
+        self.diff_thresh = 16
+        self.median_bg = None       # GPU float32 tensor (H, W)
+        self.running_bg = None      # GPU float32 tensor (H, W)
+        self.alpha = 0.01
         self.open_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self.close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        self._warmup_count = 0
+        self._warmup_buffer = []
         self._warmed = False
+        self._device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    def _bgr_to_gray_gpu(self, frame_cpu: np.ndarray) -> torch.Tensor:
+        """Convert BGR numpy frame (H, W, 3) to gray GPU float32 tensor (H, W)."""
+        t = torch.from_numpy(frame_cpu).to(self._device, dtype=torch.float32)
+        return t @ self._GRAY_WEIGHTS.to(self._device)
 
     def warmup_feed(self, frame):
         if self._warmed:
             return True
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        self.bg_subtractor.apply(gray, learningRate=0.05)
-        self._warmup_count += 1
-        if self._warmup_count >= BANK_FRAMES:
+        gray_cpu = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        self._warmup_buffer.append(gray_cpu)
+        if len(self._warmup_buffer) >= BANK_FRAMES:
+            stack = np.stack(self._warmup_buffer, axis=0)
+            median_cpu = np.median(stack, axis=0).astype(np.float32)
+            self.median_bg = torch.from_numpy(median_cpu).to(self._device)
+            self.running_bg = self.median_bg.clone()
+            self._warmup_buffer.clear()
             self._warmed = True
         return self._warmed
 
     def detect(self, frame):
         H, W = frame.shape[:2]
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        fg = self.bg_subtractor.apply(gray, learningRate=-1)
-        fg[fg == 127] = 0
-        fg = (fg == 255).astype(np.uint8)
+        # 1. GPU: BGR → gray + absdiff + threshold + running-background update
+        gray = self._bgr_to_gray_gpu(frame)
 
-        fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, self.open_k)
-        fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, self.close_k)
+        diff_median = torch.abs(gray - self.median_bg)
+        diff_running = torch.abs(gray - self.running_bg)
+        diff = torch.maximum(diff_median, diff_running)
 
-        n, labels, stats, centroids = cv2.connectedComponentsWithStats(fg, 8)
+        fg_gpu = (diff > self.diff_thresh).to(torch.uint8)
+
+        # Update running background where NO motion is detected
+        not_fg = torch.logical_not(fg_gpu.bool())
+        self.running_bg[not_fg] = (
+            (1.0 - self.alpha) * self.running_bg[not_fg]
+            + self.alpha * gray[not_fg]
+        )
+
+        # 2. CPU: morphology + connected-components
+        fg_cpu = fg_gpu.cpu().numpy()
+        fg_cpu = cv2.morphologyEx(fg_cpu, cv2.MORPH_OPEN, self.open_k)
+        fg_cpu = cv2.morphologyEx(fg_cpu, cv2.MORPH_CLOSE, self.close_k)
+
+        n, labels, stats, centroids = cv2.connectedComponentsWithStats(fg_cpu, 8)
         blobs = []
         max_area = H * W * 0.35
         for i in range(1, n):
