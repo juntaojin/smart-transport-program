@@ -37,6 +37,8 @@ export default function IPMCalibration() {
   const [worldPoints, setWorldPoints] = useState<Point[]>([]);
   const camPtsRef = useRef(cameraPoints);
   camPtsRef.current = cameraPoints;
+  const worldPtsRef = useRef(worldPoints);
+  worldPtsRef.current = worldPoints;
   const [calibratedLanes, setCalibratedLanes] = useState<Record<string, string[]>>({});
   const [cameraLanes, setCameraLanes] = useState<string[]>([]);
   const [hasFrame, setHasFrame] = useState(false);
@@ -177,41 +179,43 @@ export default function IPMCalibration() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const parent = canvas.parentElement;
-    const ro = new ResizeObserver(entries => {
-      for (const e of entries) {
-        canvas.width = e.contentRect.width;
-        canvas.height = e.contentRect.height;
+    const redrawWorld = () => {
+      const cw = canvas.width || 600, ch = canvas.height || 400;
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(0, 0, cw, ch);
+      // Grid
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < cw; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ch); ctx.stroke(); }
+      for (let y = 0; y < ch; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cw, y); ctx.stroke(); }
+
+      const scale = Math.min(cw / 800, ch / 600);
+      // Calibration points (green)
+      drawPoints(ctx, worldPtsRef.current, 0, 0, cw, ch, 800, 600);
+      // Transformed vehicle dots (red)
+      for (const v of vehicleDotsRef.current) {
+        if (!v.world) continue;
+        const px = v.world[0] / 800 * cw;
+        const py = v.world[1] / 600 * ch;
+        ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.8)'; ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(`#${v.id || '?'}`, px, py - 12);
       }
+    };
+
+    const parent = canvas.parentElement;
+    const ro = new ResizeObserver(() => {
+      canvas.width = canvas.clientWidth;
+      canvas.height = canvas.clientHeight;
+      redrawWorld();
     });
     if (parent) ro.observe(parent);
 
-    const cw = canvas.width || 600, ch = canvas.height || 400;
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(0, 0, cw, ch);
-    // Grid
-    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-    ctx.lineWidth = 1;
-    for (let x = 0; x < cw; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ch); ctx.stroke(); }
-    for (let y = 0; y < ch; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cw, y); ctx.stroke(); }
-
-    const scale = Math.min(cw / 800, ch / 600);
-    const sx = 0, sy = 0, sw = cw, sh = ch;
-    drawPoints(ctx, worldPoints, sx, sy, sw, sh, 800, 600);
-
-    // Draw transformed vehicle dots (red)
-    const dots = vehicleDotsRef.current;
-    for (const v of dots) {
-      if (!v.world) continue;
-      const px = sx + v.world[0] / 800 * sw;
-      const py = sy + v.world[1] / 600 * sh;
-      ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.8)'; ctx.fill();
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(`#${v.id || '?'}`, px, py - 12);
-    }
-  }, [worldPoints]);
+    redrawWorld();
+    return () => { ro.disconnect(); };
+  }, [worldPoints, transformedVehicles]);
 
   const drawPoints = (ctx: CanvasRenderingContext2D, points: Point[], sx: number, sy: number, sw: number, sh: number, imgW: number, imgH: number) => {
     for (let i = 0; i < points.length; i++) {
