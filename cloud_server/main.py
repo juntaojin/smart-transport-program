@@ -100,6 +100,8 @@ setup_middleware(app)
 # Include Routers
 app.include_router(rest_router)
 app.include_router(ws_router)
+from ipm_service.routes import router as ipm_router
+app.include_router(ipm_router)
 
 # Route to serve the mobile phone camera stream client webpage
 from fastapi.responses import HTMLResponse

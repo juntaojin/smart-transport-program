@@ -3,9 +3,10 @@ import Dashboard from './pages/Dashboard';
 import VehicleMonitor from './pages/VehicleMonitor';
 import AnomalyAlerts from './pages/AnomalyAlerts';
 import SystemConfig from './pages/SystemConfig';
-import { LayoutDashboard, Car, ShieldAlert, Sliders, Radio } from 'lucide-react';
+import IPMCalibration from './pages/IPMCalibration';
+import { LayoutDashboard, Car, ShieldAlert, Sliders, Radio, MapPin } from 'lucide-react';
 
-type Tab = 'dashboard' | 'vehicles' | 'anomalies' | 'config';
+type Tab = 'dashboard' | 'vehicles' | 'anomalies' | 'config' | 'ipm';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -15,6 +16,7 @@ export default function App() {
     { id: 'vehicles', label: '车辆与识别', icon: Car },
     { id: 'anomalies', label: '抛洒与异常', icon: ShieldAlert },
     { id: 'config', label: '大模型引擎', icon: Sliders },
+    { id: 'ipm', label: 'IPM 标定', icon: MapPin },
   ];
 
   const renderContent = () => {
@@ -27,6 +29,8 @@ export default function App() {
         return <AnomalyAlerts />;
       case 'config':
         return <SystemConfig />;
+      case 'ipm':
+        return <IPMCalibration />;
       default:
         return <Dashboard />;
     }
