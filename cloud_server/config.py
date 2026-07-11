@@ -23,7 +23,10 @@ defaults = {
             "yolo_imgsz": 640,
             "anomaly_threshold": 0.25,
             "anomaly_model_path": "models/yolo26s.pt",
-            "anomaly_device": "auto"
+            "anomaly_device": "auto",
+            "anomaly_bank_frames": 5,
+            "anomaly_alert_frames": 3,
+            "anomaly_max_age": 6
         },
         "zones": {
             "no_parking": [
@@ -102,6 +105,9 @@ if not os.path.isabs(anomaly_model_path):
 else:
     ANOMALY_MODEL_PATH = anomaly_model_path
 ANOMALY_DEVICE = c_server["models"].get("anomaly_device", "auto")
+ANOMALY_BANK_FRAMES = c_server["models"].get("anomaly_bank_frames", 5)
+ANOMALY_ALERT_FRAMES = c_server["models"].get("anomaly_alert_frames", 3)
+ANOMALY_MAX_AGE = c_server["models"].get("anomaly_max_age", 6)
 
 # No Parking Zones (map to tuples for points to keep pipeline logic unchanged)
 raw_zones = c_server["zones"]["no_parking"]

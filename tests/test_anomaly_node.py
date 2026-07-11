@@ -39,6 +39,10 @@ class AnomalyNodeTests(unittest.TestCase):
 
         reset.assert_called_once_with()
         load.assert_called_once()
+        _, args, kwargs = load.mock_calls[0]
+        self.assertEqual(kwargs["bank_frames"], 5)
+        self.assertEqual(kwargs["alert_frames"], 3)
+        self.assertEqual(kwargs["max_age"], 6)
         unload.assert_called_once_with()
 
 

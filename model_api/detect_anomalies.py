@@ -5,9 +5,9 @@ import cv2
 import numpy as np
 from loguru import logger
 
-BANK_FRAMES = 30
-ALERT_FRAMES = 30
-MAX_AGE = 15
+DEFAULT_BANK_FRAMES = 5
+DEFAULT_ALERT_FRAMES = 3
+DEFAULT_MAX_AGE = 6
 MIN_AREA = 300
 IOU_THRESH = 0.3
 DIFF_THRESH = 25
@@ -23,6 +23,9 @@ NORMAL_CLASSES = {
 
 _model = None
 _model_device = "auto"
+_bank_frames = DEFAULT_BANK_FRAMES
+_alert_frames = DEFAULT_ALERT_FRAMES
+_max_age = DEFAULT_MAX_AGE
 _model_lock = threading.RLock()
 _registry_lock = threading.RLock()
 _device_states = {}
@@ -41,9 +44,18 @@ def _default_model_path():
     return os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "yolo26s.pt")
 
 
-def load_anomaly_model(model_path=None, device="auto"):
+def load_anomaly_model(
+    model_path=None,
+    device="auto",
+    bank_frames=None,
+    alert_frames=None,
+    max_age=None,
+):
     """Load the shared normal-object model from an existing local path."""
-    global _model, _model_device
+    global _model, _model_device, _bank_frames, _alert_frames, _max_age
+    _bank_frames = max(1, int(bank_frames or DEFAULT_BANK_FRAMES))
+    _alert_frames = max(1, int(alert_frames or DEFAULT_ALERT_FRAMES))
+    _max_age = max(1, int(max_age or DEFAULT_MAX_AGE))
     path = os.path.abspath(os.path.expanduser(model_path or _default_model_path()))
     if not os.path.isfile(path):
         logger.error(f"[AnomalyDetection] Model file does not exist: {path}")
@@ -130,6 +142,7 @@ class _ChangeDetector:
         self.alpha = 0.01
         self.open_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self.close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        self.bank_frames = _bank_frames
         self._warmup_buffer = []
         self._warmed = False
 
@@ -138,7 +151,7 @@ class _ChangeDetector:
             return True
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         self._warmup_buffer.append(gray.copy())
-        if len(self._warmup_buffer) >= BANK_FRAMES:
+        if len(self._warmup_buffer) >= self.bank_frames:
             stack = np.stack(self._warmup_buffer, axis=0)
             self.median_bg = np.median(stack, axis=0).astype(np.uint8)
             self.running_bg = self.median_bg.astype(np.float32)
@@ -214,8 +227,8 @@ class _NormalDetector:
 
 class _AnomalyTracker:
     def __init__(self):
-        self.alert_frames = ALERT_FRAMES
-        self.max_age = MAX_AGE
+        self.alert_frames = _alert_frames
+        self.max_age = _max_age
         self.iou_thresh = IOU_THRESH
         self.tracks = {}
         self.next_id = 0
@@ -317,7 +330,7 @@ def detect_anomalies(frame, device_id="default"):
             _, alerts = state.anomaly_tracker.update(fg_blobs, normal_dets)
             return [{
                 "box": [float(value) for value in alert["bbox"]],
-                "confidence": round(min(1.0, alert["age"] / ALERT_FRAMES), 4),
+                "confidence": round(min(1.0, alert["age"] / state.anomaly_tracker.alert_frames), 4),
                 "label": "road_anomaly",
             } for alert in alerts]
     except Exception as e:

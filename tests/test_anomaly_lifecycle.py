@@ -72,7 +72,8 @@ class AnomalyLifecycleTests(unittest.TestCase):
             thread.join()
 
         state = self.module._device_states["camera-a"]
-        self.assertEqual(len(state.change_detector._warmup_buffer), 10)
+        self.assertTrue(state.change_detector.is_ready)
+        self.assertEqual(state.change_detector.bank_frames, 5)
 
     def test_lazy_model_load_and_inference_are_serialized(self):
         calls = []

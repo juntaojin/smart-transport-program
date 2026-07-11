@@ -1,6 +1,13 @@
 from loguru import logger
 
-from cloud_server.config import ANOMALY_DEVICE, ANOMALY_MODEL_PATH, ANOMALY_THRESHOLD
+from cloud_server.config import (
+    ANOMALY_ALERT_FRAMES,
+    ANOMALY_BANK_FRAMES,
+    ANOMALY_DEVICE,
+    ANOMALY_MAX_AGE,
+    ANOMALY_MODEL_PATH,
+    ANOMALY_THRESHOLD,
+)
 from cloud_server.pipeline.engine import PipelineNode
 from cloud_server.pipeline.context import FrameContext
 from model_api import (
@@ -19,13 +26,20 @@ class AnomalyDetectionNode(PipelineNode):
     def load_model(self):
         self._frame_count = 0
         reset_anomaly_state()
-        if not load_anomaly_model(ANOMALY_MODEL_PATH, ANOMALY_DEVICE):
+        if not load_anomaly_model(
+            ANOMALY_MODEL_PATH,
+            ANOMALY_DEVICE,
+            bank_frames=ANOMALY_BANK_FRAMES,
+            alert_frames=ANOMALY_ALERT_FRAMES,
+            max_age=ANOMALY_MAX_AGE,
+        ):
             raise RuntimeError(
                 f"Failed to load anomaly model from {ANOMALY_MODEL_PATH}"
             )
         logger.info(
             f"[AnomalyDetection] Node ready (threshold={ANOMALY_THRESHOLD}, "
-            f"device={ANOMALY_DEVICE})"
+            f"device={ANOMALY_DEVICE}, warmup={ANOMALY_BANK_FRAMES}, "
+            f"alert_frames={ANOMALY_ALERT_FRAMES})"
         )
 
     def unload_model(self):
