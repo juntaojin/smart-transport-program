@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { DashboardWebSocket } from '../services/ws';
-import { MapPin, Plus, Trash2, Check, RefreshCw } from 'lucide-react';
+import { MapPin, Trash2, Check, RefreshCw, Crosshair } from 'lucide-react';
 
 interface Point { x: number; y: number }
 
@@ -41,6 +41,10 @@ export default function IPMCalibration() {
   const [hasFrame, setHasFrame] = useState(false);
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [currentVehicles, setCurrentVehicles] = useState<any[]>([]);
+  const [transformedVehicles, setTransformedVehicles] = useState<any[]>([]);
+  const vehicleDotsRef = useRef<any[]>([]);
+  vehicleDotsRef.current = transformedVehicles;
 
   const cameraCanvasRef = useRef<HTMLCanvasElement>(null);
   const worldCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -95,6 +99,7 @@ export default function IPMCalibration() {
         frameRef.current = data.image;
         if (!hasFrame) setHasFrame(true);
       }
+      if (data.vehicles) setCurrentVehicles(data.vehicles);
     };
     const onStatus = (s: any) => setWsStatus(s);
     wsRef.current = new DashboardWebSocket(onMessage, onImage, onStatus);
@@ -175,6 +180,19 @@ export default function IPMCalibration() {
     const scale = Math.min(cw / 800, ch / 600);
     const sx = 0, sy = 0, sw = cw, sh = ch;
     drawPoints(ctx, worldPoints, sx, sy, sw, sh, 800, 600);
+
+    // Draw transformed vehicle dots (red)
+    const dots = vehicleDotsRef.current;
+    for (const v of dots) {
+      if (!v.world) continue;
+      const px = sx + v.world[0] / 800 * sw;
+      const py = sy + v.world[1] / 600 * sh;
+      ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.8)'; ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(`#${v.id || '?'}`, px, py - 12);
+    }
   }, [worldPoints]);
 
   const drawPoints = (ctx: CanvasRenderingContext2D, points: Point[], sx: number, sy: number, sw: number, sh: number, imgW: number, imgH: number) => {
@@ -256,6 +274,34 @@ export default function IPMCalibration() {
 
   const lanesForCamera = calibratedLanes[cameraId] || [];
 
+  const doTransform = useCallback(async () => {
+    if (!laneId || currentVehicles.length === 0) { setTransformedVehicles([]); return; }
+    const points = currentVehicles.map((v: any) => [(v.box[0] + v.box[2]) / 2, v.box[3]]);
+    try {
+      const res = await ipmRequest('/ipm/transform', {
+        method: 'POST',
+        body: JSON.stringify({ camera_id: cameraId, lane_id: laneId, vehicles: points }),
+      });
+      if (res.code === 200 && res.data?.transformed) {
+        const transformed = res.data.transformed;
+        setTransformedVehicles(currentVehicles.map((v: any, i: number) => ({
+          id: v.id,
+          class: v.class,
+          camera: points[i],
+          world: transformed[i] || null,
+        })));
+      } else {
+        setTransformedVehicles([]);
+      }
+    } catch { setTransformedVehicles([]); }
+  }, [cameraId, laneId, currentVehicles]);
+
+  // Auto-transform every 5 seconds
+  useEffect(() => {
+    const t = setInterval(() => doTransform(), 5000);
+    return () => clearInterval(t);
+  }, [doTransform]);
+
   return (
     <div className="space-y-6">
       <div className="glass-panel rounded-3xl p-6">
@@ -330,6 +376,65 @@ export default function IPMCalibration() {
             <canvas ref={worldCanvasRef} onClick={handleWorldClick} className="w-full h-full block" style={{ cursor: worldPoints.length < 4 ? 'crosshair' : 'default' }} />
           </div>
         </div>
+      </div>
+
+      {/* Transform verification */}
+      <div className="glass-panel rounded-3xl p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-slate-200 flex items-center gap-2">
+            <Crosshair size={16} className="text-rose-400" /> 俯视坐标验证
+          </h3>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-400">当前 {currentVehicles.length} 辆车 · 每5秒自动刷新</span>
+            <button
+              onClick={doTransform}
+              disabled={!laneId || currentVehicles.length === 0}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <RefreshCw size={14} /> 立即转换
+            </button>
+          </div>
+        </div>
+        {transformedVehicles.length === 0 ? (
+          <p className="text-slate-500 text-sm py-4 text-center">
+            {!laneId ? '请先选择车道 ID' : currentVehicles.length === 0 ? '等待车辆检测数据...' : '转换中...'}
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-white/5 text-slate-400 text-xs uppercase tracking-wider">
+                  <th className="py-2 px-3">Track ID</th>
+                  <th className="py-2 px-3">类别</th>
+                  <th className="py-2 px-3">摄像头坐标</th>
+                  <th className="py-2 px-3">俯视坐标</th>
+                  <th className="py-2 px-3">状态</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {transformedVehicles.map((v: any, i: number) => (
+                  <tr key={i} className="hover:bg-white/5 transition-colors">
+                    <td className="py-2 px-3 font-mono text-blue-400">#{v.id}</td>
+                    <td className="py-2 px-3 text-slate-300 capitalize">{v.class}</td>
+                    <td className="py-2 px-3 font-mono text-slate-400">
+                      ({v.camera[0].toFixed(0)}, {v.camera[1].toFixed(0)})
+                    </td>
+                    <td className="py-2 px-3 font-mono text-emerald-400">
+                      {v.world ? `(${v.world[0].toFixed(1)}, ${v.world[1].toFixed(1)})` : '-'}
+                    </td>
+                    <td className="py-2 px-3">
+                      {v.world ? (
+                        <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded">已变换</span>
+                      ) : (
+                        <span className="text-xs bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded">无标定</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* Existing calibrations */}
