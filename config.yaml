@@ -46,9 +46,11 @@ cloud_server:
     anomaly_threshold: 0.25
     anomaly_model_path: models/yolo26s.pt
     anomaly_device: auto
-    anomaly_bank_frames: 5
-    anomaly_alert_frames: 3
-    anomaly_max_age: 6
+    anomaly_bank_frames: 3
+    anomaly_alert_frames: 1
+    anomaly_max_age: 8
+    anomaly_min_area: 80
+    anomaly_diff_thresh: 18
     
   zones:
     # 禁停多边形区域配置 (点坐标为归一化比例 [0.0, 1.0])

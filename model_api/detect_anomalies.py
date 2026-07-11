@@ -5,12 +5,12 @@ import cv2
 import numpy as np
 from loguru import logger
 
-DEFAULT_BANK_FRAMES = 5
-DEFAULT_ALERT_FRAMES = 3
-DEFAULT_MAX_AGE = 6
-MIN_AREA = 300
+DEFAULT_BANK_FRAMES = 3
+DEFAULT_ALERT_FRAMES = 1
+DEFAULT_MAX_AGE = 8
+DEFAULT_MIN_AREA = 80
+DEFAULT_DIFF_THRESH = 18
 IOU_THRESH = 0.3
-DIFF_THRESH = 25
 EDGE_MARGIN = 4
 NORMAL_CONF = 0.15
 
@@ -26,6 +26,8 @@ _model_device = "auto"
 _bank_frames = DEFAULT_BANK_FRAMES
 _alert_frames = DEFAULT_ALERT_FRAMES
 _max_age = DEFAULT_MAX_AGE
+_min_area = DEFAULT_MIN_AREA
+_diff_thresh = DEFAULT_DIFF_THRESH
 _model_lock = threading.RLock()
 _registry_lock = threading.RLock()
 _device_states = {}
@@ -50,12 +52,16 @@ def load_anomaly_model(
     bank_frames=None,
     alert_frames=None,
     max_age=None,
+    min_area=None,
+    diff_thresh=None,
 ):
     """Load the shared normal-object model from an existing local path."""
-    global _model, _model_device, _bank_frames, _alert_frames, _max_age
+    global _model, _model_device, _bank_frames, _alert_frames, _max_age, _min_area, _diff_thresh
     _bank_frames = max(1, int(bank_frames or DEFAULT_BANK_FRAMES))
     _alert_frames = max(1, int(alert_frames or DEFAULT_ALERT_FRAMES))
     _max_age = max(1, int(max_age or DEFAULT_MAX_AGE))
+    _min_area = max(1, int(min_area or DEFAULT_MIN_AREA))
+    _diff_thresh = max(1, int(diff_thresh or DEFAULT_DIFF_THRESH))
     path = os.path.abspath(os.path.expanduser(model_path or _default_model_path()))
     if not os.path.isfile(path):
         logger.error(f"[AnomalyDetection] Model file does not exist: {path}")
@@ -135,8 +141,8 @@ class _ChangeDetector:
     """双路背景模型: 中值背景 + 运行平均背景, 合并差分提取前景"""
 
     def __init__(self):
-        self.min_area = MIN_AREA
-        self.diff_thresh = DIFF_THRESH
+        self.min_area = _min_area
+        self.diff_thresh = _diff_thresh
         self.median_bg = None
         self.running_bg = None
         self.alpha = 0.01
@@ -324,15 +330,17 @@ def detect_anomalies(frame, device_id="default"):
                 return []
             fg_blobs = state.change_detector.detect(frame)
             if not fg_blobs:
-                state.anomaly_tracker.update([], [])
-                return []
-            normal_dets = state.normal_detector.detect(frame)
-            _, alerts = state.anomaly_tracker.update(fg_blobs, normal_dets)
+                active_tracks, _ = state.anomaly_tracker.update([], [])
+            else:
+                normal_dets = state.normal_detector.detect(frame)
+                active_tracks, _ = state.anomaly_tracker.update(fg_blobs, normal_dets)
+
+            active_alerts = [track for track in active_tracks if track.get("alerted")]
             return [{
                 "box": [float(value) for value in alert["bbox"]],
                 "confidence": round(min(1.0, alert["age"] / state.anomaly_tracker.alert_frames), 4),
                 "label": "road_anomaly",
-            } for alert in alerts]
+            } for alert in active_alerts]
     except Exception as e:
         logger.exception(
             f"[AnomalyDetection] Detection failed for device {device_id!r}: {e}"

@@ -5,6 +5,8 @@ from cloud_server.config import (
     ANOMALY_BANK_FRAMES,
     ANOMALY_DEVICE,
     ANOMALY_MAX_AGE,
+    ANOMALY_MIN_AREA,
+    ANOMALY_DIFF_THRESH,
     ANOMALY_MODEL_PATH,
     ANOMALY_THRESHOLD,
 )
@@ -32,6 +34,8 @@ class AnomalyDetectionNode(PipelineNode):
             bank_frames=ANOMALY_BANK_FRAMES,
             alert_frames=ANOMALY_ALERT_FRAMES,
             max_age=ANOMALY_MAX_AGE,
+            min_area=ANOMALY_MIN_AREA,
+            diff_thresh=ANOMALY_DIFF_THRESH,
         ):
             raise RuntimeError(
                 f"Failed to load anomaly model from {ANOMALY_MODEL_PATH}"
@@ -39,7 +43,8 @@ class AnomalyDetectionNode(PipelineNode):
         logger.info(
             f"[AnomalyDetection] Node ready (threshold={ANOMALY_THRESHOLD}, "
             f"device={ANOMALY_DEVICE}, warmup={ANOMALY_BANK_FRAMES}, "
-            f"alert_frames={ANOMALY_ALERT_FRAMES})"
+            f"alert_frames={ANOMALY_ALERT_FRAMES}, min_area={ANOMALY_MIN_AREA}, "
+            f"diff_thresh={ANOMALY_DIFF_THRESH})"
         )
 
     def unload_model(self):
