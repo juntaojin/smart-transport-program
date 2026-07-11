@@ -542,7 +542,6 @@ export default function Dashboard() {
             {hasFrame && (
               <div className="absolute top-4 left-4 bg-slate-900/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/10 text-xs flex gap-4">
                 <span>白名单匹配: <span className="text-emerald-400">已启用</span></span>
-                <span>检测节点: <span className="text-cyan-400">YOLOv8 + SORT</span></span>
               </div>
             )}
           </div>
