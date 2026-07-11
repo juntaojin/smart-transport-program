@@ -24,11 +24,13 @@ defaults = {
             "anomaly_threshold": 0.25,
             "anomaly_model_path": "models/yolo26s.pt",
             "anomaly_device": "auto",
-            "anomaly_bank_frames": 3,
-            "anomaly_alert_frames": 1,
-            "anomaly_max_age": 8,
-            "anomaly_min_area": 80,
-            "anomaly_diff_thresh": 18
+            "anomaly_bank_frames": 5,
+            "anomaly_alert_frames": 2,
+            "anomaly_max_age": 6,
+            "anomaly_min_area": 160,
+            "anomaly_diff_thresh": 26,
+            "anomaly_min_extent": 0.18,
+            "anomaly_min_box_size": 8
         },
         "zones": {
             "no_parking": [
@@ -107,11 +109,13 @@ if not os.path.isabs(anomaly_model_path):
 else:
     ANOMALY_MODEL_PATH = anomaly_model_path
 ANOMALY_DEVICE = c_server["models"].get("anomaly_device", "auto")
-ANOMALY_BANK_FRAMES = c_server["models"].get("anomaly_bank_frames", 3)
-ANOMALY_ALERT_FRAMES = c_server["models"].get("anomaly_alert_frames", 1)
-ANOMALY_MAX_AGE = c_server["models"].get("anomaly_max_age", 8)
-ANOMALY_MIN_AREA = c_server["models"].get("anomaly_min_area", 80)
-ANOMALY_DIFF_THRESH = c_server["models"].get("anomaly_diff_thresh", 18)
+ANOMALY_BANK_FRAMES = c_server["models"].get("anomaly_bank_frames", 5)
+ANOMALY_ALERT_FRAMES = c_server["models"].get("anomaly_alert_frames", 2)
+ANOMALY_MAX_AGE = c_server["models"].get("anomaly_max_age", 6)
+ANOMALY_MIN_AREA = c_server["models"].get("anomaly_min_area", 160)
+ANOMALY_DIFF_THRESH = c_server["models"].get("anomaly_diff_thresh", 26)
+ANOMALY_MIN_EXTENT = c_server["models"].get("anomaly_min_extent", 0.18)
+ANOMALY_MIN_BOX_SIZE = c_server["models"].get("anomaly_min_box_size", 8)
 
 # No Parking Zones (map to tuples for points to keep pipeline logic unchanged)
 raw_zones = c_server["zones"]["no_parking"]

@@ -5,11 +5,13 @@ import cv2
 import numpy as np
 from loguru import logger
 
-DEFAULT_BANK_FRAMES = 3
-DEFAULT_ALERT_FRAMES = 1
-DEFAULT_MAX_AGE = 8
-DEFAULT_MIN_AREA = 80
-DEFAULT_DIFF_THRESH = 18
+DEFAULT_BANK_FRAMES = 5
+DEFAULT_ALERT_FRAMES = 2
+DEFAULT_MAX_AGE = 6
+DEFAULT_MIN_AREA = 160
+DEFAULT_DIFF_THRESH = 26
+DEFAULT_MIN_EXTENT = 0.18
+DEFAULT_MIN_BOX_SIZE = 8
 IOU_THRESH = 0.3
 EDGE_MARGIN = 4
 NORMAL_CONF = 0.15
@@ -28,6 +30,8 @@ _alert_frames = DEFAULT_ALERT_FRAMES
 _max_age = DEFAULT_MAX_AGE
 _min_area = DEFAULT_MIN_AREA
 _diff_thresh = DEFAULT_DIFF_THRESH
+_min_extent = DEFAULT_MIN_EXTENT
+_min_box_size = DEFAULT_MIN_BOX_SIZE
 _model_lock = threading.RLock()
 _registry_lock = threading.RLock()
 _device_states = {}
@@ -54,14 +58,19 @@ def load_anomaly_model(
     max_age=None,
     min_area=None,
     diff_thresh=None,
+    min_extent=None,
+    min_box_size=None,
 ):
     """Load the shared normal-object model from an existing local path."""
-    global _model, _model_device, _bank_frames, _alert_frames, _max_age, _min_area, _diff_thresh
+    global _model, _model_device, _bank_frames, _alert_frames, _max_age
+    global _min_area, _diff_thresh, _min_extent, _min_box_size
     _bank_frames = max(1, int(bank_frames or DEFAULT_BANK_FRAMES))
     _alert_frames = max(1, int(alert_frames or DEFAULT_ALERT_FRAMES))
     _max_age = max(1, int(max_age or DEFAULT_MAX_AGE))
     _min_area = max(1, int(min_area or DEFAULT_MIN_AREA))
     _diff_thresh = max(1, int(diff_thresh or DEFAULT_DIFF_THRESH))
+    _min_extent = max(0.0, min(1.0, float(min_extent or DEFAULT_MIN_EXTENT)))
+    _min_box_size = max(1, int(min_box_size or DEFAULT_MIN_BOX_SIZE))
     path = os.path.abspath(os.path.expanduser(model_path or _default_model_path()))
     if not os.path.isfile(path):
         logger.error(f"[AnomalyDetection] Model file does not exist: {path}")
@@ -149,6 +158,8 @@ class _ChangeDetector:
         self.open_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self.close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
         self.bank_frames = _bank_frames
+        self.min_extent = _min_extent
+        self.min_box_size = _min_box_size
         self._warmup_buffer = []
         self._warmed = False
 
@@ -186,11 +197,16 @@ class _ChangeDetector:
             x, y, w, h, area = stats[i]
             if area < self.min_area or area > max_area:
                 continue
+            if w < self.min_box_size or h < self.min_box_size:
+                continue
+            extent = area / max(w * h, 1)
+            if extent < self.min_extent:
+                continue
             if (x < EDGE_MARGIN or y < EDGE_MARGIN
                     or x + w > width - EDGE_MARGIN or y + h > height - EDGE_MARGIN):
                 continue
             aspect = max(w, h) / max(min(w, h), 1)
-            if aspect > 15:
+            if aspect > 8:
                 continue
             blobs.append({
                 "bbox": [x, y, x + w, y + h],
