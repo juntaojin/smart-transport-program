@@ -25,6 +25,9 @@ cloud_server:
     fps: 15
     # JPEG 编码质量 (1-100, 越低编码越快但画质越差, 默认 80)
     jpeg_quality: 95
+    # RTSP 转 WebSocket MJPEG 的 FFmpeg 质量等级 (2-31，越小画质越高、带宽越大)
+    # 5 在 720p 下通常能兼顾车牌清晰度与实时性
+    rtsp_mjpeg_qscale: 5
     # 帧率控制 (可自行调整)
     capture_fps: 24             # 边端摄像头/手机推流采集帧率
     stream_broadcast_fps: 24    # WebSocket 推流广播帧率

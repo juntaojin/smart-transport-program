@@ -9,7 +9,15 @@ from loguru import logger
 
 from cloud_server.pipeline.context import FrameContext
 from cloud_server.api.ws_routes import dashboard_manager, calculate_fps, annotate_frame, active_devices
-from cloud_server.config import CONGESTION_HIGH, CONGESTION_MEDIUM, JPEG_QUALITY, RTSP_BROADCAST_FPS
+from cloud_server.config import (
+    CONGESTION_HIGH,
+    CONGESTION_MEDIUM,
+    JPEG_QUALITY,
+    RTSP_BROADCAST_FPS,
+    RTSP_MJPEG_QSCALE,
+    VIDEO_FRAME_HEIGHT,
+    VIDEO_FRAME_WIDTH,
+)
 
 SAND_TABLE_CAMERAS = [
     {"id": "live1", "name": "桥面", "url": "rtsp://10.126.59.120:8554/live/live1"},
@@ -90,6 +98,8 @@ class RTSPStreamManager:
             proc = subprocess.Popen(
                 ['ffmpeg', '-rtsp_transport', 'tcp',
                  '-i', rtsp_url,
+                 '-vf', f'scale={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}',
+                 '-q:v', str(RTSP_MJPEG_QSCALE),
                  '-f', 'image2pipe', '-vcodec', 'mjpeg',
                  '-an', '-'],
                 stdout=subprocess.PIPE,
@@ -113,6 +123,10 @@ class RTSPStreamManager:
         broadcast_interval = 1.0 / RTSP_BROADCAST_FPS
         buf = bytearray()
         was_using_fast_path = None
+        stats_started_at = time.monotonic()
+        source_frame_count = 0
+        broadcast_frame_count = 0
+        broadcast_byte_count = 0
 
         try:
             while True:
@@ -151,6 +165,7 @@ class RTSPStreamManager:
                     continue
 
                 active_devices[device_id] = time.time()
+                source_frame_count += 1
 
                 now = time.time()
                 if now - last_broadcast_time < broadcast_interval:
@@ -181,6 +196,7 @@ class RTSPStreamManager:
                         }
                         self._broadcast_bytes(jpeg_bytes)
                         self._broadcast(payload)
+                        sent_byte_count = len(jpeg_bytes)
                     else:
                         # Slow path: decode → pipeline → annotate → re-encode
                         nparr = np.frombuffer(jpeg_bytes, np.uint8)
@@ -244,8 +260,25 @@ class RTSPStreamManager:
                         }
                         self._broadcast_bytes(bytes(buffer))
                         self._broadcast(payload)
+                        sent_byte_count = len(buffer)
 
                     last_broadcast_time = time.time()
+                    broadcast_frame_count += 1
+                    broadcast_byte_count += sent_byte_count
+
+                    stats_elapsed = time.monotonic() - stats_started_at
+                    if stats_elapsed >= 5.0:
+                        source_fps = source_frame_count / stats_elapsed
+                        broadcast_fps = broadcast_frame_count / stats_elapsed
+                        broadcast_mbps = broadcast_byte_count * 8 / stats_elapsed / 1_000_000
+                        logger.info(
+                            f"[RTSP Stats {device_id}] source={source_fps:.1f} fps, "
+                            f"broadcast={broadcast_fps:.1f} fps, {broadcast_mbps:.1f} Mbps"
+                        )
+                        stats_started_at = time.monotonic()
+                        source_frame_count = 0
+                        broadcast_frame_count = 0
+                        broadcast_byte_count = 0
 
                 except Exception as e:
                     logger.error(f"RTSP frame processing error for {device_id}: {e}")
