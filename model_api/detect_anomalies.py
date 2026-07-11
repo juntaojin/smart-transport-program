@@ -2,7 +2,6 @@ import os
 import threading
 import cv2
 import numpy as np
-import torch
 from ultralytics import YOLO
 
 BANK_FRAMES = 30
@@ -10,9 +9,9 @@ ALERT_FRAMES = 30
 MAX_AGE = 15
 MIN_AREA = 300
 IOU_THRESH = 0.3
+DIFF_THRESH = 25
 EDGE_MARGIN = 4
 NORMAL_CONF = 0.15
-STATIONARY_MAX_AGE = 375
 
 NORMAL_CLASSES = {
     0: "person", 1: "bicycle", 2: "car", 3: "motorcycle",
@@ -69,82 +68,55 @@ def _box_iou(a, b):
     return inter / (area_a + area_b - inter + 1e-8)
 
 
-def _box_ioa(blob_box, yolo_box):
-    x1 = max(blob_box[0], yolo_box[0])
-    y1 = max(blob_box[1], yolo_box[1])
-    x2 = min(blob_box[2], yolo_box[2])
-    y2 = min(blob_box[3], yolo_box[3])
-    inter = max(0, x2 - x1) * max(0, y2 - y1)
-    blob_area = max(0, blob_box[2] - blob_box[0]) * max(0, blob_box[3] - blob_box[1])
-    return inter / (blob_area + 1e-8)
-
-
 class _ChangeDetector:
-    """GPU-accelerated background subtraction + foreground blob detector.
-
-    Uses PyTorch CUDA for BGR→Gray, absdiff, threshold, and running-background
-    update.  Only morphology and connected-components stay on CPU (no GPU
-    equivalent in OpenCV's Python bindings).
-    """
-
-    _GRAY_WEIGHTS = torch.tensor([0.1140, 0.5870, 0.2989], dtype=torch.float32)
+    """双路背景模型: 中值背景 + 运行平均背景, 合并差分提取前景"""
 
     def __init__(self):
         self.min_area = MIN_AREA
-        self.diff_thresh = 16
-        self.median_bg = None       # GPU float32 tensor (H, W)
-        self.running_bg = None      # GPU float32 tensor (H, W)
+        self.diff_thresh = DIFF_THRESH
+        self.median_bg = None
+        self.running_bg = None
         self.alpha = 0.01
+
         self.open_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self.close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+
         self._warmup_buffer = []
         self._warmed = False
-        self._device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    def _bgr_to_gray_gpu(self, frame_cpu: np.ndarray) -> torch.Tensor:
-        """Convert BGR numpy frame (H, W, 3) to gray GPU float32 tensor (H, W)."""
-        t = torch.from_numpy(frame_cpu).to(self._device, dtype=torch.float32)
-        return t @ self._GRAY_WEIGHTS.to(self._device)
 
     def warmup_feed(self, frame):
         if self._warmed:
             return True
-        gray_cpu = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        self._warmup_buffer.append(gray_cpu)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        self._warmup_buffer.append(gray.copy())
         if len(self._warmup_buffer) >= BANK_FRAMES:
             stack = np.stack(self._warmup_buffer, axis=0)
-            median_cpu = np.median(stack, axis=0).astype(np.float32)
-            self.median_bg = torch.from_numpy(median_cpu).to(self._device)
-            self.running_bg = self.median_bg.clone()
+            self.median_bg = np.median(stack, axis=0).astype(np.uint8)
+            self.running_bg = self.median_bg.astype(np.float32)
             self._warmup_buffer.clear()
             self._warmed = True
         return self._warmed
 
     def detect(self, frame):
         H, W = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # 1. GPU: BGR → gray + absdiff + threshold + running-background update
-        gray = self._bgr_to_gray_gpu(frame)
+        diff_median = cv2.absdiff(gray, self.median_bg)
+        diff_running = cv2.absdiff(gray, self.running_bg.astype(np.uint8))
+        diff = cv2.max(diff_median, diff_running)
 
-        diff_median = torch.abs(gray - self.median_bg)
-        diff_running = torch.abs(gray - self.running_bg)
-        diff = torch.maximum(diff_median, diff_running)
+        fg = (diff > self.diff_thresh).astype(np.uint8)
 
-        fg_gpu = (diff > self.diff_thresh).to(torch.uint8)
-
-        # Update running background where NO motion is detected
-        not_fg = torch.logical_not(fg_gpu.bool())
-        self.running_bg[not_fg] = (
-            (1.0 - self.alpha) * self.running_bg[not_fg]
-            + self.alpha * gray[not_fg]
+        update_mask = (fg == 0)
+        self.running_bg[update_mask] = (
+            (1.0 - self.alpha) * self.running_bg[update_mask]
+            + self.alpha * gray[update_mask]
         )
 
-        # 2. CPU: morphology + connected-components
-        fg_cpu = fg_gpu.cpu().numpy()
-        fg_cpu = cv2.morphologyEx(fg_cpu, cv2.MORPH_OPEN, self.open_k)
-        fg_cpu = cv2.morphologyEx(fg_cpu, cv2.MORPH_CLOSE, self.close_k)
+        fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, self.open_k)
+        fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, self.close_k)
 
-        n, labels, stats, centroids = cv2.connectedComponentsWithStats(fg_cpu, 8)
+        n, labels, stats, centroids = cv2.connectedComponentsWithStats(fg, 8)
         blobs = []
         max_area = H * W * 0.35
         for i in range(1, n):
@@ -200,8 +172,6 @@ class _AnomalyTracker:
         self.tracks = {}
         self.next_id = 0
         self.frame_count = 0
-        self.stale_regions = []
-        self._stale_max = 20
 
     def update(self, fg_blobs, normal_dets):
         self.frame_count += 1
@@ -212,16 +182,11 @@ class _AnomalyTracker:
         for det_idx, trk_id in matches:
             d = unknown_blobs[det_idx]
             trk = self.tracks[trk_id]
-            old_centroid = trk["centroid"]
             trk["bbox"] = d["bbox"]
             trk["centroid"] = d["centroid"]
             trk["area"] = d["area"]
             trk["age"] += 1
             trk["time_since_update"] = 0
-            dist = ((d["centroid"][0] - old_centroid[0]) ** 2
-                    + (d["centroid"][1] - old_centroid[1]) ** 2) ** 0.5
-            if dist > 10:
-                trk["last_move_frame"] = self.frame_count
 
         for det_idx in unmatched_dets:
             d = unknown_blobs[det_idx]
@@ -233,7 +198,6 @@ class _AnomalyTracker:
                 "age": 1,
                 "time_since_update": 0,
                 "alerted": False,
-                "last_move_frame": self.frame_count,
             }
             self.next_id += 1
 
@@ -242,15 +206,9 @@ class _AnomalyTracker:
             self.tracks[trk_id]["age"] += 1
 
         alerts = []
-        stale_bboxes = []
         for trk_id in list(self.tracks):
             trk = self.tracks[trk_id]
             if trk["time_since_update"] > self.max_age:
-                del self.tracks[trk_id]
-                continue
-            if (trk["time_since_update"] == 0
-                    and self.frame_count - trk["last_move_frame"] > STATIONARY_MAX_AGE):
-                stale_bboxes.append(trk["bbox"])
                 del self.tracks[trk_id]
                 continue
             if (not trk["alerted"]
@@ -258,10 +216,6 @@ class _AnomalyTracker:
                     and trk["time_since_update"] == 0):
                 trk["alerted"] = True
                 alerts.append(trk)
-
-        self.stale_regions.extend(stale_bboxes)
-        if len(self.stale_regions) > self._stale_max:
-            self.stale_regions = self.stale_regions[-self._stale_max:]
 
         active = [t for t in self.tracks.values()
                   if t["time_since_update"] <= self.max_age]
@@ -277,7 +231,7 @@ class _AnomalyTracker:
             excluded = False
             for nd in normal_dets:
                 nx1, ny1, nx2, ny2 = nd["bbox"]
-                if _box_ioa([bx1, by1, bx2, by2], [nx1, ny1, nx2, ny2]) > 0.5:
+                if _box_iou([bx1, by1, bx2, by2], [nx1, ny1, nx2, ny2]) > 0.1:
                     excluded = True
                     break
             if not excluded:
@@ -327,11 +281,6 @@ def detect_anomalies(frame):
             return []
 
         fg_blobs = cd.detect(frame)
-
-        if at.stale_regions:
-            fg_blobs = [b for b in fg_blobs if not any(
-                _box_iou(b["bbox"], sb) > 0.3 for sb in at.stale_regions
-            )]
 
         if len(fg_blobs) == 0:
             at.update([], [])

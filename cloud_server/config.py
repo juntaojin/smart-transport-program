@@ -93,6 +93,7 @@ os.makedirs(os.path.dirname(YOLO_MODEL_PATH), exist_ok=True)
 YOLO_CONFIDENCE = c_server["models"]["yolo_confidence"]
 YOLO_IOU = c_server["models"].get("yolo_iou", 0.45)
 YOLO_IMGSZ = c_server["models"].get("yolo_imgsz", 640)
+ANOMALY_THRESHOLD = c_server["models"].get("anomaly_threshold", 0.25)
 
 # No Parking Zones (map to tuples for points to keep pipeline logic unchanged)
 raw_zones = c_server["zones"]["no_parking"]
