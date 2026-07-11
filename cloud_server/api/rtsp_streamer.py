@@ -1,9 +1,10 @@
 import time
 import cv2
-import base64
 import json
 import threading
 import asyncio
+import subprocess
+import numpy as np
 from loguru import logger
 
 from cloud_server.pipeline.context import FrameContext
@@ -24,6 +25,30 @@ SAND_TABLE_CAMERAS = [
     {"id": "live11", "name": "停车场入口", "url": "rtsp://10.126.59.120:8554/live/live11"},
     {"id": "live12", "name": "道路1", "url": "rtsp://10.126.59.120:8554/live/live12"},
 ]
+
+
+def _read_jpeg_frame(stdout):
+    """从ffmpeg stdout读取一帧完整的JPEG"""
+    buf = bytearray()
+    soi_pos = -1
+    while True:
+        chunk = stdout.read(8192)
+        if not chunk:
+            return None
+        buf.extend(chunk)
+        # 找SOI
+        if soi_pos < 0:
+            soi_pos = buf.find(b'\xff\xd8')
+            if soi_pos < 0:
+                buf = bytearray()
+                continue
+            if soi_pos > 0:
+                buf = buf[soi_pos:]
+                soi_pos = 0
+        # 找EOI
+        eoi_pos = buf.find(b'\xff\xd9', soi_pos + 2)
+        if eoi_pos >= 0:
+            return bytes(buf[:eoi_pos + 2])
 
 
 class RTSPStreamManager:
@@ -75,24 +100,37 @@ class RTSPStreamManager:
                 dashboard_manager.broadcast(payload), self._loop
             )
 
-    def _open_capture(self, rtsp_url):
-        cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        if not cap.isOpened():
-            cap.release()
+    def _broadcast_bytes(self, jpeg_bytes):
+        if self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                dashboard_manager.broadcast_bytes(jpeg_bytes), self._loop
+            )
+
+    def _open_ffmpeg(self, rtsp_url):
+        """启动ffmpeg子进程，从RTSP拉流输出MJPEG到stdout"""
+        try:
+            proc = subprocess.Popen(
+                ['ffmpeg', '-rtsp_transport', 'tcp',
+                 '-i', rtsp_url,
+                 '-f', 'image2pipe', '-vcodec', 'mjpeg',
+                 '-an', '-'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            return proc
+        except FileNotFoundError:
+            logger.error("ffmpeg not found. Install ffmpeg or add to PATH.")
             return None
-        return cap
 
     def _stream_worker(self, device_id, rtsp_url):
-        cap = self._open_capture(rtsp_url)
-        if cap is None:
-            logger.error(f"Failed to open RTSP stream: {rtsp_url}")
+        proc = self._open_ffmpeg(rtsp_url)
+        if proc is None:
+            logger.error(f"Failed to start ffmpeg for: {rtsp_url}")
             with self._lock:
                 self.active_streams.pop(device_id, None)
             return
 
-        logger.info(f"RTSP capture opened: {device_id}")
-        reconnect_count = 0
+        logger.info(f"RTSP FFmpeg capture opened: {device_id}")
         last_broadcast_time = 0.0
         broadcast_interval = 1.0 / RTSP_BROADCAST_FPS
 
@@ -102,19 +140,18 @@ class RTSPStreamManager:
                     if device_id not in self.active_streams or not self.active_streams[device_id]["active"]:
                         break
 
-                ret, frame = cap.read()
-                if not ret:
-                    logger.warning(f"RTSP frame read failed for {device_id}, reconnecting...")
-                    cap.release()
-                    reconnect_count += 1
+                jpeg_bytes = _read_jpeg_frame(proc.stdout)
+                if jpeg_bytes is None:
+                    logger.warning(f"RTSP stream ended for {device_id}, reconnecting...")
+                    proc.terminate()
+                    proc.wait()
                     time.sleep(1)
-                    cap = self._open_capture(rtsp_url)
-                    if cap is None:
-                        logger.error(f"RTSP reconnect failed for {device_id} (attempt {reconnect_count})")
+                    proc = self._open_ffmpeg(rtsp_url)
+                    if proc is None:
+                        logger.error(f"RTSP reconnect failed for {device_id}")
                         time.sleep(3)
                     continue
 
-                reconnect_count = 0
                 active_devices[device_id] = time.time()
 
                 now = time.time()
@@ -122,28 +159,31 @@ class RTSPStreamManager:
                     continue
 
                 try:
-                    frame = cv2.resize(frame, (1280, 720))
-
                     has_active_nodes = any(node.enabled for node in self.pipeline.nodes.values())
                     has_parking_zones = len(NO_PARKING_ZONES) > 0
 
                     if not has_active_nodes and not has_parking_zones:
-                        success, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-                        if not success:
-                            continue
-                        img_b64 = base64.b64encode(buffer).decode('utf-8')
+                        # Fast path: passthrough original JPEG
                         payload = {
                             "device_id": device_id,
                             "timestamp": time.time(),
                             "fps": calculate_fps(),
                             "congestion_level": "low",
-                            "image": f"data:image/jpeg;base64,{img_b64}",
                             "vehicles": [],
                             "violations": [],
                             "anomalies": [],
                             "system_metrics": self._get_metrics()
                         }
+                        self._broadcast_bytes(jpeg_bytes)
+                        self._broadcast(payload)
                     else:
+                        # Slow path: decode → pipeline → annotate → re-encode
+                        nparr = np.frombuffer(jpeg_bytes, np.uint8)
+                        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                        if frame is None:
+                            continue
+                        frame = cv2.resize(frame, (1280, 720))
+
                         context = FrameContext(frame_data=frame, timestamp=time.time(), device_id=device_id)
                         self._frame_counters[device_id] = self._frame_counters.get(device_id, 0) + 1
                         fc = self._frame_counters[device_id]
@@ -179,9 +219,7 @@ class RTSPStreamManager:
                                 "plate": plate
                             })
 
-                        img_b64 = base64.b64encode(buffer).decode('utf-8')
                         fps_val = calculate_fps()
-
                         v_count = len(context.properties.get("vehicle_boxes", []))
                         congestion = "low"
                         if v_count > CONGESTION_HIGH:
@@ -194,14 +232,14 @@ class RTSPStreamManager:
                             "timestamp": context.timestamp,
                             "fps": fps_val,
                             "congestion_level": congestion,
-                            "image": f"data:image/jpeg;base64,{img_b64}",
                             "vehicles": vehicles_payload,
                             "violations": context.properties.get("violations", []),
                             "anomalies": context.properties.get("road_anomalies", []),
                             "system_metrics": self._get_metrics()
                         }
+                        self._broadcast_bytes(bytes(buffer))
+                        self._broadcast(payload)
 
-                    self._broadcast(payload)
                     last_broadcast_time = time.time()
 
                 except Exception as e:
@@ -211,7 +249,8 @@ class RTSPStreamManager:
         except Exception as e:
             logger.error(f"RTSP stream worker fatal error for {device_id}: {e}")
         finally:
-            cap.release()
+            proc.terminate()
+            proc.wait()
             active_devices.pop(device_id, None)
             with self._lock:
                 self.active_streams.pop(device_id, None)
