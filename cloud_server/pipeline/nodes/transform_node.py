@@ -1,4 +1,5 @@
 import numpy as np
+import time
 from typing import Optional
 from loguru import logger
 from cloud_server.pipeline.engine import PipelineNode
@@ -17,7 +18,10 @@ class CoordinateTransformNode(PipelineNode):
     def __init__(self):
         super().__init__(name="transform")
         self._frame_count = 0
-        self._H_cache = {}  # {device_id: (H_matrix, timestamp)}
+        # Cache both calibrated matrices and missing calibration results. Without
+        # the None entry, an uncalibrated camera reparses config.yaml every frame.
+        self._H_cache: dict[str, Optional[np.ndarray]] = {}
+        self._missing_cache_time: dict[str, float] = {}
 
     def load_model(self):
         logger.info("[Transform] Node ready")
@@ -25,16 +29,24 @@ class CoordinateTransformNode(PipelineNode):
 
     def unload_model(self):
         self._H_cache.clear()
+        self._missing_cache_time.clear()
         logger.info("[Transform] Node disabled, cache cleared")
 
     def _get_homography(self, device_id: str) -> Optional[np.ndarray]:
         """获取单应性矩阵（带缓存，避免每帧读 YAML）"""
         if device_id in self._H_cache:
-            return self._H_cache[device_id]
+            cached = self._H_cache[device_id]
+            if cached is not None:
+                return cached
+            if time.monotonic() - self._missing_cache_time.get(device_id, 0.0) < 5.0:
+                return None
 
         H = load_homography(device_id)
-        if H is not None:
-            self._H_cache[device_id] = H
+        self._H_cache[device_id] = H
+        if H is None:
+            self._missing_cache_time[device_id] = time.monotonic()
+        else:
+            self._missing_cache_time.pop(device_id, None)
         return H
 
     def _do_process(self, context: FrameContext) -> FrameContext:

@@ -4,6 +4,7 @@ import json
 import threading
 import asyncio
 import subprocess
+import queue
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from loguru import logger
@@ -197,9 +198,43 @@ class RTSPStreamManager:
         broadcast_frame_count = 0
         broadcast_byte_count = 0
         inference_completed_count = 0
-        inference_future = None
         latest_context = None
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"inference-{device_id}")
+        inference_lock = threading.RLock()
+        inference_results = queue.SimpleQueue()
+        inference_state = {
+            "latest_frame": None,
+            "running": False,
+            "stopping": False,
+            "submitted_count": self._frame_counters.get(device_id, 0),
+        }
+
+        def submit_latest_frame_locked():
+            frame = inference_state["latest_frame"]
+            if frame is None or inference_state["stopping"]:
+                inference_state["running"] = False
+                return
+
+            inference_state["latest_frame"] = None
+            inference_state["running"] = True
+            inference_state["submitted_count"] += 1
+            frame_count = inference_state["submitted_count"]
+            future = executor.submit(self._execute_pipeline, frame, device_id, frame_count)
+            future.add_done_callback(on_inference_done)
+
+        def on_inference_done(future):
+            try:
+                inference_results.put((True, future.result()))
+            except Exception as exc:
+                inference_results.put((False, exc))
+
+            # Continue immediately with the newest available frame. This removes
+            # the extra one-video-frame scheduling bubble from the capture loop.
+            with inference_lock:
+                if inference_state["latest_frame"] is not None and not inference_state["stopping"]:
+                    submit_latest_frame_locked()
+                else:
+                    inference_state["running"] = False
 
         try:
             while True:
@@ -262,28 +297,26 @@ class RTSPStreamManager:
                         self._broadcast(payload)
                         sent_byte_count = len(jpeg_bytes)
                     else:
-                        # Video transport never waits for inference. Consume a finished
-                        # result, then submit only the newest frame when the worker is idle.
-                        if inference_future is not None and inference_future.done():
+                        # Video transport never waits for inference. Completed results
+                        # are consumed here while the worker independently chains jobs.
+                        while True:
                             try:
-                                mode, latest_context = inference_future.result()
+                                succeeded, result = inference_results.get_nowait()
+                            except queue.Empty:
+                                break
+                            if succeeded:
+                                mode, latest_context = result
                                 self._update_plate_cache(device_id, mode, latest_context)
                                 inference_completed_count += 1
-                            except Exception as exc:
-                                logger.error(f"RTSP inference failed for {device_id}: {exc}")
-                            inference_future = None
+                            else:
+                                logger.error(f"RTSP inference failed for {device_id}: {result}")
 
-                        if inference_future is None:
-                            frame = cv2.imdecode(np.frombuffer(jpeg_bytes, np.uint8), cv2.IMREAD_COLOR)
-                            if frame is not None:
-                                self._frame_counters[device_id] = self._frame_counters.get(device_id, 0) + 1
-                                frame_count = self._frame_counters[device_id]
-                                inference_future = executor.submit(
-                                    self._execute_pipeline,
-                                    frame,
-                                    device_id,
-                                    frame_count,
-                                )
+                        frame = cv2.imdecode(np.frombuffer(jpeg_bytes, np.uint8), cv2.IMREAD_COLOR)
+                        if frame is not None:
+                            with inference_lock:
+                                inference_state["latest_frame"] = frame
+                                if not inference_state["running"]:
+                                    submit_latest_frame_locked()
 
                         payload = self._build_payload(device_id, latest_context)
                         self._broadcast_bytes(jpeg_bytes)
@@ -318,8 +351,10 @@ class RTSPStreamManager:
         except Exception as e:
             logger.error(f"RTSP stream worker fatal error for {device_id}: {e}")
         finally:
-            if inference_future is not None:
-                inference_future.cancel()
+            with inference_lock:
+                inference_state["stopping"] = True
+                inference_state["latest_frame"] = None
+                self._frame_counters[device_id] = inference_state["submitted_count"]
             executor.shutdown(wait=False)
             proc.terminate()
             proc.wait()
