@@ -45,7 +45,9 @@ logger.add(
     rotation="10 MB",
     retention="14 days",
     enqueue=True,
-    filter=lambda record: record["message"].startswith(("[RTSP Stats", "[Pipeline Stats")),
+    filter=lambda record: record["message"].startswith(
+        ("[RTSP Stats", "[Edge Stats", "[Pipeline Stats")
+    ),
     format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {message}",
 )
 logger.info(f"Runtime logs will be written to: {LOG_DIR}")

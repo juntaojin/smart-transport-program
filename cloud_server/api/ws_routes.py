@@ -3,8 +3,6 @@ import cv2
 import numpy as np
 import json
 import asyncio
-import torch
-from torchvision.io import decode_jpeg
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 from datetime import datetime
@@ -16,8 +14,7 @@ from cloud_server.database.orm_models import (
     PlateRecord, VehicleStat, ParkingViolation, RoadAnomaly, SystemMetric
 )
 from cloud_server.config import (
-    VIDEO_FPS, CONGESTION_HIGH, CONGESTION_MEDIUM, CONGESTION_LOW, JPEG_QUALITY,
-    STREAM_BROADCAST_FPS,
+    CONGESTION_HIGH, CONGESTION_MEDIUM,
 )
 
 router = APIRouter(prefix="/ws")
@@ -56,7 +53,6 @@ dashboard_manager = ConnectionManager()
 active_devices = {}  # Keep track of active streaming devices {device_id: last_seen}
 frame_counters = {}  # Per-device frame counter for key frame strategy
 plate_db = {}  # Per-device plate history: {device_id: {track_id: plate_string}}
-device_busy: dict[str, bool] = {}  # Per-device processing guard, skip frame if busy
 
 # FPS and throughput calculation helpers
 frame_times = []
@@ -240,21 +236,6 @@ async def save_aggregated_stats(properties, device_id):
         await db.commit()
 
 
-def _process_frame(pipeline, frame, mode, device_id, fc):
-    """Run pipeline + annotate + encode in thread (blocks, don't call from async)"""
-    context = FrameContext(
-        frame_data=frame,
-        timestamp=time.time(),
-        device_id=device_id,
-    )
-    context = pipeline.execute(context, mode=mode)
-    annotated = annotate_frame(frame, context.properties)
-    success, buf = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-    if not success:
-        return None, None
-    return context, buf
-
-
 def _process_pipeline_only(pipeline, frame, mode, device_id, fc):
     """Run pipeline only, skip annotation/encode if no viewers"""
     context = FrameContext(
@@ -269,166 +250,152 @@ def _process_pipeline_only(pipeline, frame, mode, device_id, fc):
 # --- Stream WebSocket (Edge -> Cloud) ---
 @router.websocket("/stream/{device_id}")
 async def receive_stream(websocket: WebSocket, device_id: str):
+    """Receive edge JPEGs without coupling video delivery to AI latency."""
     await websocket.accept()
     logger.info(f"Edge streaming device connected: {device_id}")
     active_devices[device_id] = time.time()
-    
+
     pipeline = websocket.app.state.pipeline
-    last_broadcast_time = 0.0
-    BROADCAST_INTERVAL = 1.0 / STREAM_BROADCAST_FPS
-    
-    try:
-        frame_no = 0
-        while True:
-            data = await websocket.receive_bytes()
-            active_devices[device_id] = time.time()
-            frame_no += 1
-            
-            # Frame rate throttle: skip if too soon since last broadcast
-            now = time.time()
-            if now - last_broadcast_time < BROADCAST_INTERVAL:
+    inference_event = asyncio.Event()
+    inference_state = {
+        "latest_jpeg": None,
+        "latest_context": None,
+        "stopping": False,
+        "submitted": frame_counters.get(device_id, 0),
+        "completed": 0,
+        "last_persist_time": 0.0,
+    }
+
+    def build_payload(context):
+        properties = context.properties if context is not None else {}
+        dev_plates = plate_db.get(device_id, {})
+        track_ids = properties.get("track_ids", [])
+        boxes = properties.get("vehicle_boxes", [])
+        classes = properties.get("vehicle_classes", [])
+        world_coords = properties.get("world_coords", {})
+        vehicles = []
+        for index, box in enumerate(boxes):
+            track_id = track_ids[index] if index < len(track_ids) else None
+            vehicles.append({
+                "id": track_id,
+                "class": classes[index] if index < len(classes) else "vehicle",
+                "box": [float(value) for value in box],
+                "plate": dev_plates.get(track_id, "") if track_id is not None else "",
+                "world_coord": world_coords.get(track_id),
+            })
+
+        vehicle_count = len(boxes)
+        congestion = "high" if vehicle_count > CONGESTION_HIGH else (
+            "medium" if vehicle_count >= CONGESTION_MEDIUM else "low"
+        )
+        from cloud_server.utils.system_info import get_detailed_metrics
+        return {
+            "device_id": device_id,
+            "timestamp": context.timestamp if context is not None else time.time(),
+            "fps": calculate_fps(),
+            "congestion_level": congestion,
+            "vehicles": vehicles,
+            "violations": properties.get("violations", []),
+            "anomalies": properties.get("road_anomalies", []),
+            "system_metrics": get_detailed_metrics(),
+        }
+
+    def process_jpeg(jpeg_data, mode):
+        frame = cv2.imdecode(np.frombuffer(jpeg_data, np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            return None
+        return _process_pipeline_only(pipeline, frame, mode, device_id, 0)
+
+    async def inference_worker():
+        while not inference_state["stopping"]:
+            await inference_event.wait()
+            inference_event.clear()
+            jpeg_data = inference_state["latest_jpeg"]
+            inference_state["latest_jpeg"] = None
+            if jpeg_data is None or inference_state["stopping"]:
                 continue
-            
-            has_active_nodes = any(node.enabled for node in pipeline.nodes.values())
 
-            # Parking-zone polygons are rendered by the dashboard. They only require
-            # server-side frame processing when a pipeline node is actually enabled.
-            if not has_active_nodes:
-                from cloud_server.utils.system_info import get_detailed_metrics
-                payload = {
-                    "device_id": device_id,
-                    "timestamp": time.time(),
-                    "fps": calculate_fps(),
-                    "congestion_level": "low",
-                    "vehicles": [],
-                    "violations": [],
-                    "anomalies": [],
-                    "system_metrics": get_detailed_metrics()
-                }
-                asyncio.create_task(dashboard_manager.broadcast_bytes(data))
-                asyncio.create_task(dashboard_manager.broadcast(payload))
-                last_broadcast_time = time.time()
-                
-                if frame_no % 30 == 0:
-                    logger.info(f"[Timing {device_id}] frame #{frame_no} (fast)")
-                continue
-
-            # Skip if still processing previous frame
-            if device_busy.get(device_id, False):
-                if frame_no % 60 == 0:
-                    logger.warning(f"[{device_id}] Skipping frame #{frame_no}: pipeline busy")
-                continue
-            
-            device_busy[device_id] = True
-            try:
-                # GPU JPEG decode
-                try:
-                    tensor = decode_jpeg(
-                        torch.frombuffer(bytearray(data), dtype=torch.uint8),
-                        device='cuda'
-                    )
-                    frame = tensor[[2, 1, 0], :, :].permute(1, 2, 0).contiguous().cpu().numpy()
-                except Exception:
-                    nparr = np.frombuffer(data, np.uint8)
-                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-                if frame is None:
-                    device_busy[device_id] = False
-                    continue
-
-                frame_counters[device_id] = frame_counters.get(device_id, 0) + 1
-                fc = frame_counters[device_id]
-                mode = "full" if fc % 15 == 0 else "track"
-
-                has_viewers = len(dashboard_manager.active_connections) > 0
-                if has_viewers:
-                    context, annotated_buffer = await asyncio.to_thread(
-                        _process_frame, pipeline, frame, mode, device_id, fc
-                    )
-                else:
-                    context = await asyncio.to_thread(
-                        _process_pipeline_only, pipeline, frame, mode, device_id, fc
-                    )
-                    annotated_buffer = None
-            finally:
-                device_busy[device_id] = False
-
+            inference_state["submitted"] += 1
+            inference_number = inference_state["submitted"]
+            mode = "full" if inference_number % 15 == 0 else "track"
+            context = await asyncio.to_thread(process_jpeg, jpeg_data, mode)
             if context is None:
                 continue
 
-            # Persist plates by track_id
+            inference_state["latest_context"] = context
+            inference_state["completed"] += 1
+            frame_counters[device_id] = inference_number
+
             if mode == "full":
                 track_ids = context.properties.get("track_ids", [])
                 plates = context.properties.get("plate_numbers", [])
-                if device_id not in plate_db:
-                    plate_db[device_id] = {}
-                for tid, plate in zip(track_ids, plates):
+                device_plates = plate_db.setdefault(device_id, {})
+                active_ids = {track_id for track_id in track_ids if track_id is not None}
+                for stale_id in set(device_plates) - active_ids:
+                    device_plates.pop(stale_id, None)
+                for track_id, plate in zip(track_ids, plates):
                     if plate:
-                        plate_db[device_id][tid] = plate
+                        device_plates[track_id] = plate
 
-            # Build vehicle list with persisted plates and world coordinates
-            dev_plates = plate_db.get(device_id, {})
-            world_coords = context.properties.get("world_coords", {})
-            track_ids = context.properties.get("track_ids", [])
-            vehicle_boxes = context.properties.get("vehicle_boxes", [])
-            vehicle_classes = context.properties.get("vehicle_classes", [])
-            vehicles_payload = []
-            for i, box in enumerate(vehicle_boxes):
-                tid = track_ids[i] if i < len(track_ids) else None
-                cls_name = vehicle_classes[i] if i < len(vehicle_classes) else "vehicle"
-                plate = dev_plates.get(tid, "") if tid is not None else ""
-                wc = world_coords.get(tid, None)
-                vehicles_payload.append({
-                    "id": tid,
-                    "class": cls_name,
-                    "box": [float(c) for c in box],
-                    "plate": plate,
-                    "world_coord": wc,
-                })
-                
-            fps = calculate_fps()
-            
-            v_count = len(context.properties.get("vehicle_boxes", []))
-            congestion = "low"
-            if v_count > CONGESTION_HIGH:
-                congestion = "high"
-            elif v_count >= CONGESTION_MEDIUM:
-                congestion = "medium"
+            now = time.monotonic()
+            if now - inference_state["last_persist_time"] >= 1.0:
+                inference_state["last_persist_time"] = now
+                asyncio.create_task(save_aggregated_stats(context.properties, device_id))
 
-            from cloud_server.utils.system_info import get_detailed_metrics
-            sys_metrics = get_detailed_metrics()
+    worker_task = asyncio.create_task(inference_worker())
+    stats_started_at = time.monotonic()
+    received_count = 0
+    broadcast_count = 0
+    previous_completed = 0
 
-            payload = {
-                "device_id": device_id,
-                "timestamp": context.timestamp,
-                "fps": fps,
-                "congestion_level": congestion,
-                "vehicles": vehicles_payload,
-                "violations": context.properties.get("violations", []),
-                "anomalies": context.properties.get("road_anomalies", []),
-                "system_metrics": sys_metrics
-            }
-            
-            asyncio.create_task(save_aggregated_stats(context.properties, device_id))
-            if has_viewers and annotated_buffer is not None:
-                asyncio.create_task(dashboard_manager.broadcast_bytes(bytes(annotated_buffer)))
-                asyncio.create_task(dashboard_manager.broadcast(payload))
-            last_broadcast_time = time.time()
-            
-            if fc % 30 == 0:
+    try:
+        while True:
+            data = await websocket.receive_bytes()
+            active_devices[device_id] = time.time()
+            received_count += 1
+
+
+            has_active_nodes = any(node.enabled for node in pipeline.nodes.values())
+            if has_active_nodes:
+                # Keep one pending frame: newer input replaces stale work.
+                inference_state["latest_jpeg"] = data
+                inference_event.set()
+            else:
+                inference_state["latest_context"] = None
+
+            payload = build_payload(inference_state["latest_context"])
+            asyncio.create_task(dashboard_manager.broadcast_bytes(data))
+            asyncio.create_task(dashboard_manager.broadcast(payload))
+            broadcast_count += 1
+
+            stats_elapsed = time.monotonic() - stats_started_at
+            if stats_elapsed >= 5.0:
+                completed = inference_state["completed"]
                 logger.info(
-                    f"[Timing {device_id}] frame #{fc} mode={mode}"
+                    f"[Edge Stats {device_id}] receive={received_count / stats_elapsed:.1f} fps, "
+                    f"broadcast={broadcast_count / stats_elapsed:.1f} fps, "
+                    f"inference={(completed - previous_completed) / stats_elapsed:.1f} fps"
                 )
+                stats_started_at = time.monotonic()
+                received_count = 0
+                broadcast_count = 0
+                previous_completed = completed
 
     except WebSocketDisconnect:
         logger.info(f"Edge streaming device disconnected: {device_id}")
+    except Exception as exc:
+        logger.error(f"Error on edge stream WebSocket {device_id}: {exc}")
+    finally:
         active_devices.pop(device_id, None)
         frame_counters.pop(device_id, None)
-    except Exception as e:
-        logger.error(f"Error on edge stream WebSocket {device_id}: {e}")
-        active_devices.pop(device_id, None)
-        frame_counters.pop(device_id, None)
-
+        inference_state["stopping"] = True
+        inference_state["latest_jpeg"] = None
+        inference_event.set()
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
 
 # --- Dashboard WebSocket (Cloud -> Frontend Cockpit) ---
 @router.websocket("/dashboard")
