@@ -24,11 +24,11 @@ cloud_server:
     height: 720
     fps: 15
     # JPEG 编码质量 (1-100, 越低编码越快但画质越差, 默认 80)
-    jpeg_quality: 80
+    jpeg_quality: 95
     # 帧率控制 (可自行调整)
-    capture_fps: 20            # 边端摄像头/手机推流采集帧率
-    stream_broadcast_fps: 15   # WebSocket 推流广播帧率
-    rtsp_broadcast_fps: 20     # RTSP 拉流广播帧率
+    capture_fps: 24             # 边端摄像头/手机推流采集帧率
+    stream_broadcast_fps: 24    # WebSocket 推流广播帧率
+    rtsp_broadcast_fps: 30      # RTSP 拉流广播帧率
     
   models:
     # YOLO 目标检测模型路径 (如果不存在会自动下载)
