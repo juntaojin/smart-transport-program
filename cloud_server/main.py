@@ -114,8 +114,6 @@ async def get_phone_stream_page():
         with open(template_path, "r", encoding="utf-8") as f:
             html_content = f.read()
         html_content = html_content.replace("{{CAPTURE_FPS}}", str(CAPTURE_FPS))
-        with open(template_path, "r", encoding="utf-8") as f:
-            html_content = f.read()
         return HTMLResponse(content=html_content)
     except Exception as e:
         logger.error(f"Failed to read phone template: {e}")
