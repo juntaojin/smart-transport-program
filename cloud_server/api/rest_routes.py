@@ -210,15 +210,15 @@ async def get_system_stats(
 
 @router.get("/configs/models")
 async def get_model_configs(request: Request):
-    """Get active pipeline nodes and their configuration state"""
+    """Get user-facing AI capabilities; internal dependency nodes stay hidden."""
     pipeline = request.app.state.pipeline
     data = []
-    for name, node in pipeline.nodes.items():
+    for name in pipeline.USER_CAPABILITIES:
+        node = pipeline.nodes[name]
         data.append({
             "model_name": name,
             "enabled": node.enabled,
-            "confidence_threshold": getattr(node, "confidence", getattr(node, "threshold", 0.5)),
-            "iou_threshold": 0.45
+            "requires_vehicle_pipeline": name in pipeline.VEHICLE_DEPENDENTS,
         })
     return {"code": 200, "message": "success", "data": data}
 
@@ -227,40 +227,25 @@ async def update_model_configs(payload: dict, request: Request):
     """Modify AI model configurations and toggle nodes in real-time"""
     model_name = payload.get("model_name")
     enabled = payload.get("enabled")
-    conf_threshold = payload.get("confidence_threshold")
     
     if not model_name:
         raise HTTPException(status_code=400, detail="model_name is required")
         
     pipeline = request.app.state.pipeline
     
-    if model_name not in pipeline.nodes:
-        raise HTTPException(status_code=404, detail=f"Model node '{model_name}' not found")
-        
-    node = pipeline.nodes[model_name]
-    
-    # 1. Update enabled state
-    if enabled is not None:
-        pipeline.toggle_node(model_name, enabled)
-        
-    # 2. Update confidence/threshold parameter if supported
-    if conf_threshold is not None:
-        if hasattr(node, "confidence"):
-            node.confidence = float(conf_threshold)
-        elif hasattr(node, "threshold"):
-            node.threshold = float(conf_threshold)
-            
-    logger.info(f"Updated configuration for {model_name}: enabled={node.enabled}, threshold={conf_threshold}")
-    
-    return {
-        "code": 200, 
-        "message": "success", 
-        "data": {
-            "model_name": model_name,
-            "enabled": node.enabled,
-            "confidence_threshold": getattr(node, "confidence", getattr(node, "threshold", 0.5))
-        }
+    if model_name not in pipeline.USER_CAPABILITIES:
+        raise HTTPException(status_code=400, detail=f"'{model_name}' is not a user-facing capability")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled must be a boolean")
+
+    pipeline.set_capability_state(model_name, enabled)
+    logger.info(f"Updated capability {model_name}: enabled={enabled}")
+
+    states = {
+        name: pipeline.nodes[name].enabled
+        for name in pipeline.USER_CAPABILITIES
     }
+    return {"code": 200, "message": "success", "data": states}
 
 @router.get("/configs/zones")
 async def get_zones_config(request: Request):

@@ -189,7 +189,6 @@ export default function IPMCalibration() {
       for (let x = 0; x < cw; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ch); ctx.stroke(); }
       for (let y = 0; y < ch; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cw, y); ctx.stroke(); }
 
-      const scale = Math.min(cw / 800, ch / 600);
       // Calibration points (green)
       drawPoints(ctx, worldPtsRef.current, 0, 0, cw, ch, 800, 600);
       // Transformed vehicle dots (red)
@@ -293,8 +292,6 @@ export default function IPMCalibration() {
       setMessage({ type: 'err', text: '删除失败: ' + (e?.message || '网络错误') });
     }
   };
-
-  const lanesForCamera = calibratedLanes[cameraId] || [];
 
   const doTransform = useCallback(async () => {
     if (!laneId || currentVehicles.length === 0) { setTransformedVehicles([]); return; }

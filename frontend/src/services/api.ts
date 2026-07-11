@@ -49,12 +49,11 @@ export const statsAPI = {
 // System configs
 export const configAPI = {
   getModels: () => request('/configs/models'),
-  updateModel: (modelName: string, enabled: boolean, confidenceThreshold: number) => request('/configs/models', {
+  updateModel: (modelName: string, enabled: boolean) => request('/configs/models', {
     method: 'PUT',
     body: JSON.stringify({
       model_name: modelName,
       enabled,
-      confidence_threshold: confidenceThreshold,
     }),
   }),
   getZones: () => request('/configs/zones'),

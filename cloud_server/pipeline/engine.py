@@ -43,6 +43,14 @@ class InferencePipeline:
     # Lightweight frames keep detection/tracking current. Expensive OCR and other
     # analysis nodes only run on full frames (currently one out of every 15).
     TRACK_ONLY_NODES = {"vehicle_detection", "tracking", "transform"}
+    USER_CAPABILITIES = (
+        "vehicle_detection",
+        "plate_ocr",
+        "anomaly_detection",
+        "violation_detection",
+    )
+    VEHICLE_DEPENDENTS = ("plate_ocr", "violation_detection")
+    VEHICLE_INTERNAL_NODES = ("tracking", "transform")
 
     def __init__(self):
         self.nodes: dict[str, PipelineNode] = {}
@@ -60,6 +68,31 @@ class InferencePipeline:
             self.nodes[node_name].toggle(state)
         else:
             logger.warning(f"Pipeline node '{node_name}' not found for toggling.")
+
+    def set_capability_state(self, capability: str, state: bool):
+        """Toggle a user-facing capability while preserving pipeline dependencies."""
+        if capability not in self.USER_CAPABILITIES:
+            raise ValueError(f"'{capability}' is an internal node or unknown capability")
+
+        if state and capability in self.VEHICLE_DEPENDENTS:
+            self.toggle_node("vehicle_detection", True)
+            for node_name in self.VEHICLE_INTERNAL_NODES:
+                self.toggle_node(node_name, True)
+
+        if capability == "vehicle_detection":
+            if state:
+                self.toggle_node(capability, True)
+                for node_name in self.VEHICLE_INTERNAL_NODES:
+                    self.toggle_node(node_name, True)
+            else:
+                for node_name in self.VEHICLE_DEPENDENTS:
+                    self.toggle_node(node_name, False)
+                for node_name in reversed(self.VEHICLE_INTERNAL_NODES):
+                    self.toggle_node(node_name, False)
+                self.toggle_node(capability, False)
+            return
+
+        self.toggle_node(capability, state)
 
     def execute(self, context: FrameContext, mode: str = "full") -> FrameContext:
         if mode == "skip":

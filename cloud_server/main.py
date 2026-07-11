@@ -82,14 +82,13 @@ async def lifespan(app: FastAPI):
     pipeline.add_node(AnomalyDetectionNode())
     pipeline.add_node(ViolationDetectionNode())
 
-    # All nodes start disabled by default — enable via frontend or API
-    # 车辆检测和跟踪默认开启（前端核心功能依赖）
-    pipeline.toggle_node("vehicle_detection", True)
-    pipeline.toggle_node("tracking", True)
+    # Vehicle recognition is the default user capability; its internal tracking
+    # and coordinate nodes are enabled automatically by dependency management.
+    pipeline.set_capability_state("vehicle_detection", True)
     app.state.pipeline = pipeline
     registered = list(pipeline.nodes.keys())
     logger.info(f"Pipeline nodes registered: {registered}")
-    logger.info("Pipeline initialized with all nodes disabled by default.")
+    logger.info("Pipeline initialized with vehicle recognition enabled by default.")
     logger.info("Use /api/configs/models to enable nodes dynamically.")
 
     # 3. Initialize RTSP stream manager
