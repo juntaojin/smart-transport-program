@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 
 import cv2
 import numpy as np
@@ -12,6 +13,12 @@ DEFAULT_MIN_AREA = 160
 DEFAULT_DIFF_THRESH = 26
 DEFAULT_MIN_EXTENT = 0.18
 DEFAULT_MIN_BOX_SIZE = 8
+DEFAULT_STABILIZATION_ENABLED = True
+DEFAULT_MAX_JITTER_PX = 20
+DEFAULT_ALERT_SECONDS = 0.8
+DEFAULT_MAX_MISSING_SECONDS = 0.5
+DEFAULT_STATIC_EDGE_SUPPRESSION_PX = 3
+DEFAULT_VEHICLE_MASK_PADDING = 8
 IOU_THRESH = 0.3
 EDGE_MARGIN = 4
 NORMAL_CONF = 0.15
@@ -32,6 +39,12 @@ _min_area = DEFAULT_MIN_AREA
 _diff_thresh = DEFAULT_DIFF_THRESH
 _min_extent = DEFAULT_MIN_EXTENT
 _min_box_size = DEFAULT_MIN_BOX_SIZE
+_stabilization_enabled = DEFAULT_STABILIZATION_ENABLED
+_max_jitter_px = DEFAULT_MAX_JITTER_PX
+_alert_seconds = DEFAULT_ALERT_SECONDS
+_max_missing_seconds = DEFAULT_MAX_MISSING_SECONDS
+_static_edge_suppression_px = DEFAULT_STATIC_EDGE_SUPPRESSION_PX
+_vehicle_mask_padding = DEFAULT_VEHICLE_MASK_PADDING
 _model_lock = threading.RLock()
 _registry_lock = threading.RLock()
 _device_states = {}
@@ -60,10 +73,18 @@ def load_anomaly_model(
     diff_thresh=None,
     min_extent=None,
     min_box_size=None,
+    stabilization_enabled=None,
+    max_jitter_px=None,
+    alert_seconds=None,
+    max_missing_seconds=None,
+    static_edge_suppression_px=None,
+    vehicle_mask_padding=None,
 ):
     """Load the shared normal-object model from an existing local path."""
     global _model, _model_device, _bank_frames, _alert_frames, _max_age
     global _min_area, _diff_thresh, _min_extent, _min_box_size
+    global _stabilization_enabled, _max_jitter_px, _alert_seconds
+    global _max_missing_seconds, _static_edge_suppression_px, _vehicle_mask_padding
     _bank_frames = max(1, int(bank_frames or DEFAULT_BANK_FRAMES))
     _alert_frames = max(1, int(alert_frames or DEFAULT_ALERT_FRAMES))
     _max_age = max(1, int(max_age or DEFAULT_MAX_AGE))
@@ -71,6 +92,21 @@ def load_anomaly_model(
     _diff_thresh = max(1, int(diff_thresh or DEFAULT_DIFF_THRESH))
     _min_extent = max(0.0, min(1.0, float(min_extent or DEFAULT_MIN_EXTENT)))
     _min_box_size = max(1, int(min_box_size or DEFAULT_MIN_BOX_SIZE))
+    _stabilization_enabled = (
+        DEFAULT_STABILIZATION_ENABLED if stabilization_enabled is None
+        else bool(stabilization_enabled)
+    )
+    _max_jitter_px = max(0.0, float(max_jitter_px or DEFAULT_MAX_JITTER_PX))
+    _alert_seconds = max(0.0, float(alert_seconds or DEFAULT_ALERT_SECONDS))
+    _max_missing_seconds = max(0.0, float(max_missing_seconds or DEFAULT_MAX_MISSING_SECONDS))
+    _static_edge_suppression_px = max(0, int(
+        static_edge_suppression_px if static_edge_suppression_px is not None
+        else DEFAULT_STATIC_EDGE_SUPPRESSION_PX
+    ))
+    _vehicle_mask_padding = max(0, int(
+        vehicle_mask_padding if vehicle_mask_padding is not None
+        else DEFAULT_VEHICLE_MASK_PADDING
+    ))
     path = os.path.abspath(os.path.expanduser(model_path or _default_model_path()))
     if not os.path.isfile(path):
         logger.error(f"[AnomalyDetection] Model file does not exist: {path}")
@@ -146,8 +182,93 @@ def _box_iou(a, b):
     return inter / (area_a + area_b - inter + 1e-8)
 
 
+def _box_overlap_ratio(a, b):
+    x1 = max(a[0], b[0])
+    y1 = max(a[1], b[1])
+    x2 = min(a[2], b[2])
+    y2 = min(a[3], b[3])
+    inter = max(0, x2 - x1) * max(0, y2 - y1)
+    area_a = max(0, a[2] - a[0]) * max(0, a[3] - a[1])
+    return inter / (area_a + 1e-8)
+
+
+def _normalize_external_boxes(boxes):
+    normalized = []
+    for box in boxes or []:
+        if isinstance(box, dict):
+            box = box.get("box") or box.get("bbox")
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            x1, y1, x2, y2 = [float(value) for value in box]
+        except (TypeError, ValueError):
+            continue
+        if x2 > x1 and y2 > y1:
+            normalized.append({"bbox": [x1, y1, x2, y2], "label": "normal", "conf": 1.0})
+    return normalized
+
+
+class _FrameStabilizer:
+    """Estimate current-frame-to-reference affine motion using sparse LK flow."""
+
+    def __init__(self):
+        self.enabled = _stabilization_enabled
+        self.max_jitter_px = _max_jitter_px
+        self.reference_gray = None
+        self.feature_params = dict(maxCorners=200, qualityLevel=0.01, minDistance=7, blockSize=7)
+        self.lk_params = dict(
+            winSize=(21, 21), maxLevel=3,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+        )
+
+    def reset(self, gray):
+        self.reference_gray = gray.copy()
+
+    def stabilize(self, gray):
+        if not self.enabled:
+            if self.reference_gray is None:
+                self.reset(gray)
+            return gray
+        if self.reference_gray is None:
+            self.reset(gray)
+            return gray
+        matrix = self._estimate_current_to_reference(gray)
+        if matrix is None:
+            return gray
+        height, width = gray.shape[:2]
+        return cv2.warpAffine(
+            gray, matrix, (width, height), flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+
+    def _estimate_current_to_reference(self, gray):
+        ref_pts = cv2.goodFeaturesToTrack(self.reference_gray, mask=None, **self.feature_params)
+        if ref_pts is None or len(ref_pts) < 8:
+            return None
+        cur_pts, status, _ = cv2.calcOpticalFlowPyrLK(
+            self.reference_gray, gray, ref_pts, None, **self.lk_params
+        )
+        if cur_pts is None or status is None:
+            return None
+        status = status.reshape(-1).astype(bool)
+        ref_good = ref_pts.reshape(-1, 2)[status]
+        cur_good = cur_pts.reshape(-1, 2)[status]
+        if len(ref_good) < 8:
+            return None
+        matrix, inliers = cv2.estimateAffinePartial2D(
+            cur_good, ref_good, method=cv2.RANSAC, ransacReprojThreshold=3.0,
+            maxIters=2000, confidence=0.99,
+        )
+        if matrix is None or inliers is None or int(inliers.sum()) < 6:
+            return None
+        dx, dy = float(matrix[0, 2]), float(matrix[1, 2])
+        if np.hypot(dx, dy) > self.max_jitter_px:
+            return None
+        return matrix.astype(np.float32)
+
+
 class _ChangeDetector:
-    """双路背景模型: 中值背景 + 运行平均背景, 合并差分提取前景"""
+    """Stabilized background subtraction with static-edge residual suppression."""
 
     def __init__(self):
         self.min_area = _min_area
@@ -160,6 +281,12 @@ class _ChangeDetector:
         self.bank_frames = _bank_frames
         self.min_extent = _min_extent
         self.min_box_size = _min_box_size
+        self.static_edge_suppression_px = _static_edge_suppression_px
+        self.edge_k = None
+        if self.static_edge_suppression_px > 0:
+            size = self.static_edge_suppression_px * 2 + 1
+            self.edge_k = cv2.getStructuringElement(cv2.MORPH_RECT, (size, size))
+        self.stabilizer = _FrameStabilizer()
         self._warmup_buffer = []
         self._warmed = False
 
@@ -167,11 +294,13 @@ class _ChangeDetector:
         if self._warmed:
             return True
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        self._warmup_buffer.append(gray.copy())
+        stabilized = self.stabilizer.stabilize(gray)
+        self._warmup_buffer.append(stabilized.copy())
         if len(self._warmup_buffer) >= self.bank_frames:
             stack = np.stack(self._warmup_buffer, axis=0)
             self.median_bg = np.median(stack, axis=0).astype(np.uint8)
             self.running_bg = self.median_bg.astype(np.float32)
+            self.stabilizer.reference_gray = self.median_bg.copy()
             self._warmup_buffer.clear()
             self._warmed = True
         return self._warmed
@@ -179,14 +308,16 @@ class _ChangeDetector:
     def detect(self, frame):
         height, width = frame.shape[:2]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        diff_median = cv2.absdiff(gray, self.median_bg)
-        diff_running = cv2.absdiff(gray, self.running_bg.astype(np.uint8))
+        stabilized = self.stabilizer.stabilize(gray)
+        diff_median = cv2.absdiff(stabilized, self.median_bg)
+        diff_running = cv2.absdiff(stabilized, self.running_bg.astype(np.uint8))
         diff = cv2.max(diff_median, diff_running)
         fg = (diff > self.diff_thresh).astype(np.uint8)
+        fg = self._suppress_static_edges(fg, stabilized)
         update_mask = fg == 0
         self.running_bg[update_mask] = (
             (1.0 - self.alpha) * self.running_bg[update_mask]
-            + self.alpha * gray[update_mask]
+            + self.alpha * stabilized[update_mask]
         )
         fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, self.open_k)
         fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, self.close_k)
@@ -214,6 +345,16 @@ class _ChangeDetector:
                 "area": int(area),
             })
         return blobs
+
+    def _suppress_static_edges(self, fg, stabilized_gray):
+        if self.edge_k is None:
+            return fg
+        bg_edges = cv2.Canny(self.median_bg, 50, 150)
+        frame_edges = cv2.Canny(stabilized_gray, 50, 150)
+        edge_mask = cv2.dilate(cv2.max(bg_edges, frame_edges), self.edge_k) > 0
+        suppressed = fg.copy()
+        suppressed[edge_mask] = 0
+        return suppressed
 
     @property
     def is_ready(self):
@@ -251,12 +392,16 @@ class _AnomalyTracker:
     def __init__(self):
         self.alert_frames = _alert_frames
         self.max_age = _max_age
+        self.alert_seconds = _alert_seconds
+        self.max_missing_seconds = _max_missing_seconds
+        self.vehicle_mask_padding = _vehicle_mask_padding
         self.iou_thresh = IOU_THRESH
         self.tracks = {}
         self.next_id = 0
         self.frame_count = 0
 
-    def update(self, fg_blobs, normal_dets):
+    def update(self, fg_blobs, normal_dets, timestamp=None):
+        now = float(time.monotonic() if timestamp is None else timestamp)
         self.frame_count += 1
         unknown_blobs = self._exclude_normal(fg_blobs, normal_dets)
         matches, unmatched_dets, unmatched_trks = self._associate(unknown_blobs)
@@ -266,6 +411,7 @@ class _AnomalyTracker:
             track.update({
                 "bbox": detection["bbox"], "centroid": detection["centroid"],
                 "area": detection["area"], "time_since_update": 0,
+                "last_seen": now,
             })
             track["age"] += 1
         for det_idx in unmatched_dets:
@@ -274,6 +420,7 @@ class _AnomalyTracker:
                 "track_id": self.next_id, "bbox": detection["bbox"],
                 "centroid": detection["centroid"], "area": detection["area"],
                 "age": 1, "time_since_update": 0, "alerted": False,
+                "first_seen": now, "last_seen": now,
             }
             self.next_id += 1
         for trk_id in unmatched_trks:
@@ -282,10 +429,14 @@ class _AnomalyTracker:
         alerts = []
         for trk_id in list(self.tracks):
             track = self.tracks[trk_id]
-            if track["time_since_update"] > self.max_age:
+            missing_seconds = now - track.get("last_seen", now)
+            if (track["time_since_update"] > self.max_age
+                    or missing_seconds > self.max_missing_seconds):
                 del self.tracks[trk_id]
-            elif (not track["alerted"] and track["age"] >= self.alert_frames
-                  and track["time_since_update"] == 0):
+            elif (not track["alerted"]
+                  and track["time_since_update"] == 0
+                  and track["age"] >= self.alert_frames
+                  and now - track.get("first_seen", now) >= self.alert_seconds):
                 track["alerted"] = True
                 alerts.append(track)
         active = [track for track in self.tracks.values()
@@ -295,9 +446,21 @@ class _AnomalyTracker:
     def _exclude_normal(self, fg_blobs, normal_dets):
         if not normal_dets:
             return fg_blobs
+        padded = []
+        for detection in normal_dets:
+            box = detection["bbox"]
+            padded.append([
+                box[0] - self.vehicle_mask_padding,
+                box[1] - self.vehicle_mask_padding,
+                box[2] + self.vehicle_mask_padding,
+                box[3] + self.vehicle_mask_padding,
+            ])
         return [blob for blob in fg_blobs if not any(
-            _box_iou(blob["bbox"], detection["bbox"]) > 0.1
-            for detection in normal_dets
+            _box_iou(blob["bbox"], box) > 0.1
+            or _box_overlap_ratio(blob["bbox"], box) > 0.35
+            or (box[0] <= blob["centroid"][0] <= box[2]
+                and box[1] <= blob["centroid"][1] <= box[3])
+            for box in padded
         )]
 
     def _associate(self, blobs):
@@ -333,8 +496,8 @@ def _valid_frame(frame):
             and frame.shape[2] == 3 and frame.dtype == np.uint8)
 
 
-def detect_anomalies(frame, device_id="default"):
-    """Detect newly persistent road anomalies using state isolated by device ID."""
+def detect_anomalies(frame, device_id="default", timestamp=None, normal_boxes=None):
+    """Detect persistent road anomalies using state isolated by device ID."""
     if not _valid_frame(frame):
         logger.warning("[AnomalyDetection] Ignoring invalid frame; expected non-empty uint8 BGR image")
         return []
@@ -346,15 +509,26 @@ def detect_anomalies(frame, device_id="default"):
                 return []
             fg_blobs = state.change_detector.detect(frame)
             if not fg_blobs:
-                active_tracks, _ = state.anomaly_tracker.update([], [])
+                active_tracks, _ = state.anomaly_tracker.update([], [], timestamp=timestamp)
             else:
-                normal_dets = state.normal_detector.detect(frame)
-                active_tracks, _ = state.anomaly_tracker.update(fg_blobs, normal_dets)
+                external_normal = _normalize_external_boxes(normal_boxes)
+                normal_dets = external_normal or state.normal_detector.detect(frame)
+                active_tracks, _ = state.anomaly_tracker.update(
+                    fg_blobs, normal_dets, timestamp=timestamp
+                )
 
             active_alerts = [track for track in active_tracks if track.get("alerted")]
             return [{
                 "box": [float(value) for value in alert["bbox"]],
-                "confidence": round(min(1.0, alert["age"] / state.anomaly_tracker.alert_frames), 4),
+                "confidence": round(min(
+                    1.0,
+                    max(
+                        alert["age"] / state.anomaly_tracker.alert_frames,
+                        (float(time.monotonic() if timestamp is None else timestamp)
+                         - alert.get("first_seen", 0.0))
+                        / max(state.anomaly_tracker.alert_seconds, 1e-6),
+                    ),
+                ), 4),
                 "label": "road_anomaly",
             } for alert in active_alerts]
     except Exception as e:

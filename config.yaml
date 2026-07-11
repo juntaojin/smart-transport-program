@@ -53,7 +53,13 @@ cloud_server:
     anomaly_diff_thresh: 26
     anomaly_min_extent: 0.18
     anomaly_min_box_size: 8
-    
+    anomaly_stabilization_enabled: true
+    anomaly_max_jitter_px: 20
+    anomaly_alert_seconds: 0.8
+    anomaly_max_missing_seconds: 0.5
+    anomaly_static_edge_suppression_px: 3
+    anomaly_vehicle_mask_padding: 8
+
   zones:
     # 禁停多边形区域配置 (点坐标为归一化比例 [0.0, 1.0])
     no_parking:

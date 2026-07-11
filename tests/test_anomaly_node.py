@@ -21,8 +21,34 @@ class AnomalyNodeTests(unittest.TestCase):
         ) as detect:
             result = node._do_process(context)
 
-        detect.assert_called_once_with(context.frame, device_id="camera-7")
+        detect.assert_called_once_with(
+            context.frame,
+            device_id="camera-7",
+            timestamp=0.0,
+            normal_boxes=None,
+        )
         self.assertEqual(result.properties["road_anomalies"], [])
+
+    def test_node_passes_vehicle_boxes_as_normal_context(self):
+        node = AnomalyDetectionNode()
+        context = FrameContext(
+            frame_data=np.zeros((8, 8, 3), dtype=np.uint8),
+            timestamp=12.5,
+            device_id="camera-8",
+        )
+        context.properties["vehicle_boxes"] = [[1, 2, 3, 4]]
+        with patch(
+            "cloud_server.pipeline.nodes.anomaly_node.detect_anomalies",
+            return_value=[],
+        ) as detect:
+            node._do_process(context)
+
+        detect.assert_called_once_with(
+            context.frame,
+            device_id="camera-8",
+            timestamp=12.5,
+            normal_boxes=[[1, 2, 3, 4]],
+        )
 
     def test_node_lifecycle_uses_portable_configuration(self):
         node = AnomalyDetectionNode()
@@ -47,6 +73,12 @@ class AnomalyNodeTests(unittest.TestCase):
         self.assertEqual(kwargs["diff_thresh"], 26)
         self.assertEqual(kwargs["min_extent"], 0.18)
         self.assertEqual(kwargs["min_box_size"], 8)
+        self.assertTrue(kwargs["stabilization_enabled"])
+        self.assertEqual(kwargs["max_jitter_px"], 20)
+        self.assertEqual(kwargs["alert_seconds"], 0.8)
+        self.assertEqual(kwargs["max_missing_seconds"], 0.5)
+        self.assertEqual(kwargs["static_edge_suppression_px"], 3)
+        self.assertEqual(kwargs["vehicle_mask_padding"], 8)
         unload.assert_called_once_with()
 
 

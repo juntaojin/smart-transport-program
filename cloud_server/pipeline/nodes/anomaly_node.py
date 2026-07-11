@@ -11,6 +11,12 @@ from cloud_server.config import (
     ANOMALY_MIN_BOX_SIZE,
     ANOMALY_MODEL_PATH,
     ANOMALY_THRESHOLD,
+    ANOMALY_STABILIZATION_ENABLED,
+    ANOMALY_MAX_JITTER_PX,
+    ANOMALY_ALERT_SECONDS,
+    ANOMALY_MAX_MISSING_SECONDS,
+    ANOMALY_STATIC_EDGE_SUPPRESSION_PX,
+    ANOMALY_VEHICLE_MASK_PADDING,
 )
 from cloud_server.pipeline.engine import PipelineNode
 from cloud_server.pipeline.context import FrameContext
@@ -40,6 +46,12 @@ class AnomalyDetectionNode(PipelineNode):
             diff_thresh=ANOMALY_DIFF_THRESH,
             min_extent=ANOMALY_MIN_EXTENT,
             min_box_size=ANOMALY_MIN_BOX_SIZE,
+            stabilization_enabled=ANOMALY_STABILIZATION_ENABLED,
+            max_jitter_px=ANOMALY_MAX_JITTER_PX,
+            alert_seconds=ANOMALY_ALERT_SECONDS,
+            max_missing_seconds=ANOMALY_MAX_MISSING_SECONDS,
+            static_edge_suppression_px=ANOMALY_STATIC_EDGE_SUPPRESSION_PX,
+            vehicle_mask_padding=ANOMALY_VEHICLE_MASK_PADDING,
         ):
             raise RuntimeError(
                 f"Failed to load anomaly model from {ANOMALY_MODEL_PATH}"
@@ -47,8 +59,9 @@ class AnomalyDetectionNode(PipelineNode):
         logger.info(
             f"[AnomalyDetection] Node ready (threshold={ANOMALY_THRESHOLD}, "
             f"device={ANOMALY_DEVICE}, warmup={ANOMALY_BANK_FRAMES}, "
-            f"alert_frames={ANOMALY_ALERT_FRAMES}, min_area={ANOMALY_MIN_AREA}, "
-            f"diff_thresh={ANOMALY_DIFF_THRESH}, min_extent={ANOMALY_MIN_EXTENT})"
+            f"alert_frames={ANOMALY_ALERT_FRAMES}, alert_seconds={ANOMALY_ALERT_SECONDS}, "
+            f"min_area={ANOMALY_MIN_AREA}, diff_thresh={ANOMALY_DIFF_THRESH}, "
+            f"min_extent={ANOMALY_MIN_EXTENT}, stabilization={ANOMALY_STABILIZATION_ENABLED})"
         )
 
     def unload_model(self):
@@ -59,7 +72,13 @@ class AnomalyDetectionNode(PipelineNode):
         self._frame_count += 1
 
         try:
-            anomalies = detect_anomalies(context.frame, device_id=context.device_id)
+            normal_boxes = context.properties.get("vehicle_boxes")
+            anomalies = detect_anomalies(
+                context.frame,
+                device_id=context.device_id,
+                timestamp=context.timestamp,
+                normal_boxes=normal_boxes,
+            )
         except NotImplementedError:
             logger.error("[AnomalyDetection] detect_anomalies() is not implemented yet")
             context.properties["road_anomalies"] = []

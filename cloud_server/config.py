@@ -30,7 +30,13 @@ defaults = {
             "anomaly_min_area": 160,
             "anomaly_diff_thresh": 26,
             "anomaly_min_extent": 0.18,
-            "anomaly_min_box_size": 8
+            "anomaly_min_box_size": 8,
+            "anomaly_stabilization_enabled": True,
+            "anomaly_max_jitter_px": 20,
+            "anomaly_alert_seconds": 0.8,
+            "anomaly_max_missing_seconds": 0.5,
+            "anomaly_static_edge_suppression_px": 3,
+            "anomaly_vehicle_mask_padding": 8
         },
         "zones": {
             "no_parking": [
@@ -116,6 +122,12 @@ ANOMALY_MIN_AREA = c_server["models"].get("anomaly_min_area", 160)
 ANOMALY_DIFF_THRESH = c_server["models"].get("anomaly_diff_thresh", 26)
 ANOMALY_MIN_EXTENT = c_server["models"].get("anomaly_min_extent", 0.18)
 ANOMALY_MIN_BOX_SIZE = c_server["models"].get("anomaly_min_box_size", 8)
+ANOMALY_STABILIZATION_ENABLED = c_server["models"].get("anomaly_stabilization_enabled", True)
+ANOMALY_MAX_JITTER_PX = c_server["models"].get("anomaly_max_jitter_px", 20)
+ANOMALY_ALERT_SECONDS = c_server["models"].get("anomaly_alert_seconds", 0.8)
+ANOMALY_MAX_MISSING_SECONDS = c_server["models"].get("anomaly_max_missing_seconds", 0.5)
+ANOMALY_STATIC_EDGE_SUPPRESSION_PX = c_server["models"].get("anomaly_static_edge_suppression_px", 3)
+ANOMALY_VEHICLE_MASK_PADDING = c_server["models"].get("anomaly_vehicle_mask_padding", 8)
 
 # No Parking Zones (map to tuples for points to keep pipeline logic unchanged)
 raw_zones = c_server["zones"]["no_parking"]
