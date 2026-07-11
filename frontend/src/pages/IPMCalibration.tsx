@@ -38,6 +38,7 @@ export default function IPMCalibration() {
   const camPtsRef = useRef(cameraPoints);
   camPtsRef.current = cameraPoints;
   const [calibratedLanes, setCalibratedLanes] = useState<Record<string, string[]>>({});
+  const [cameraLanes, setCameraLanes] = useState<string[]>([]);
   const [hasFrame, setHasFrame] = useState(false);
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -83,6 +84,23 @@ export default function IPMCalibration() {
       } catch { setCameraPoints([]); setWorldPoints([]); }
     })();
   }, [cameraId, laneId]);
+
+  // Fetch lanes for current camera
+  useEffect(() => {
+    if (!cameraId) { setCameraLanes([]); return; }
+    (async () => {
+      try {
+        const res = await ipmAPI.getCameraConfig(cameraId);
+        if (res.code === 200 && res.data?.lanes) {
+          setCameraLanes(Object.keys(res.data.lanes));
+        } else {
+          setCameraLanes([]);
+        }
+      } catch { setCameraLanes([]); }
+    })();
+  }, [cameraId]);
+
+  const selectLane = (lid: string) => { setLaneId(lid); };
 
   // WebSocket for camera feed
   useEffect(() => {
@@ -318,22 +336,55 @@ export default function IPMCalibration() {
       )}
 
       {/* Camera ID + Lane ID */}
-      <div className="flex flex-wrap items-end gap-4">
-        <div>
-          <label className="text-xs text-slate-400 block mb-1">摄像头 ID</label>
-          <input value={cameraId} onChange={e => setCameraId(e.target.value)} className="bg-slate-900/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-slate-200 w-44 outline-none focus:border-blue-500" />
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-end gap-4">
+          <div>
+            <label className="text-xs text-slate-400 block mb-1">摄像头 ID</label>
+            <input value={cameraId} onChange={e => setCameraId(e.target.value)} className="bg-slate-900/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-slate-200 w-44 outline-none focus:border-blue-500" />
+          </div>
+          <button
+            onClick={handleCalibrate}
+            disabled={cameraPoints.length !== 4 || worldPoints.length !== 4 || !laneId}
+            className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            <Check size={16} /> 计算标定
+          </button>
         </div>
+
+        {/* Lane selection buttons */}
         <div>
-          <label className="text-xs text-slate-400 block mb-1">车道 ID</label>
-          <input value={laneId} onChange={e => setLaneId(e.target.value)} placeholder="northbound" className="bg-slate-900/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-slate-200 w-44 outline-none focus:border-blue-500" />
+          <label className="text-xs text-slate-400 block mb-2">已标定车道（点击选择）</label>
+          <div className="flex flex-wrap items-center gap-2">
+            {cameraLanes.length === 0 ? (
+              <span className="text-xs text-slate-500">暂无，请先标定或手动输入车道ID</span>
+            ) : (
+              cameraLanes.map((lid: string) => (
+                <button
+                  key={lid}
+                  onClick={() => selectLane(lid)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                    laneId === lid
+                      ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40'
+                      : 'bg-slate-900/40 text-slate-400 border border-white/10 hover:border-blue-500/30 hover:text-slate-200'
+                  }`}
+                >
+                  {lid}
+                </button>
+              ))
+            )}
+            <button
+              onClick={() => { setLaneId(''); setCameraPoints([]); setWorldPoints([]); }}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-900/40 text-slate-500 border border-dashed border-slate-600 hover:border-slate-400 hover:text-slate-300 transition-colors"
+            >
+              + 新建
+            </button>
+          </div>
         </div>
-        <button
-          onClick={handleCalibrate}
-          disabled={cameraPoints.length !== 4 || worldPoints.length !== 4 || !laneId}
-          className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-        >
-          <Check size={16} /> 计算标定
-        </button>
+
+        <div>
+          <label className="text-xs text-slate-400 block mb-1">车道 ID（可手动输入）</label>
+          <input value={laneId} onChange={e => setLaneId(e.target.value)} placeholder="输入车道名称后回车" className="bg-slate-900/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-slate-200 w-56 outline-none focus:border-blue-500" />
+        </div>
       </div>
 
       {/* Dual panels */}
