@@ -1,21 +1,25 @@
+export interface FrameMeta {
+  deviceId: string;
+}
+
 export class DashboardWebSocket {
   private url: string;
   private ws: WebSocket | null = null;
   private reconnectTimer: any = null;
   private onMessageCallback: (data: any) => void;
-  private onImageCallback: (blob: Blob) => void;
+  private onImageCallback: (blob: Blob, meta: FrameMeta) => void;
   private onStatusCallback: (status: 'connecting' | 'connected' | 'disconnected') => void;
   private active = false;
 
   constructor(
     onMessage: (data: any) => void,
-    onImage: (blob: Blob) => void,
+    onImage: (blob: Blob, meta: FrameMeta) => void,
     onStatus: (status: 'connecting' | 'connected' | 'disconnected') => void
   ) {
     this.onMessageCallback = onMessage;
     this.onImageCallback = onImage;
     this.onStatusCallback = onStatus;
-    
+
     const envUrl = import.meta.env.VITE_WS_URL;
     if (envUrl) {
       this.url = envUrl;
@@ -33,7 +37,7 @@ export class DashboardWebSocket {
     try {
       this.ws = new WebSocket(this.url);
       this.ws.binaryType = 'blob';
-      
+
       this.ws.onopen = () => {
         this.onStatusCallback('connected');
         console.log('Dashboard WebSocket connected');
@@ -41,7 +45,7 @@ export class DashboardWebSocket {
 
       this.ws.onmessage = (event) => {
         if (event.data instanceof Blob) {
-          this.onImageCallback(event.data);
+          this.handleImageBlob(event.data);
           return;
         }
         try {
@@ -89,6 +93,19 @@ export class DashboardWebSocket {
   public stop() {
     this.active = false;
     this.disconnect();
+  }
+
+  private async handleImageBlob(blob: Blob) {
+    const prefix = await blob.slice(0, 128).text().catch(() => '');
+    if (prefix.startsWith('STJ1 ')) {
+      const newlineIndex = prefix.indexOf('\n');
+      if (newlineIndex > 5) {
+        const deviceId = prefix.slice(5, newlineIndex).trim();
+        this.onImageCallback(blob.slice(newlineIndex + 1, blob.size, 'image/jpeg'), { deviceId });
+        return;
+      }
+    }
+    this.onImageCallback(blob, { deviceId: 'default' });
   }
 
   private scheduleReconnect() {

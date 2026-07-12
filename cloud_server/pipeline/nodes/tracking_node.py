@@ -1,10 +1,18 @@
 from loguru import logger
+
 from cloud_server.pipeline.engine import PipelineNode
 from cloud_server.pipeline.context import FrameContext
 
 
 class TrackingNode(PipelineNode):
-    """ByteTrack 追踪节点 — 透传 YOLO model.track() 产生的 track_id"""
+    """Pass through YOLO/ByteTrack IDs produced by model_api.detect_vehicles.
+
+    The standalone reference script uses Ultralytics YOLO ``model.track`` with
+    ``tracker="bytetrack.yaml"`` and renders ``result.boxes.id`` directly.  To
+    keep the system behavior consistent with that tested path, this node no
+    longer reassigns IDs with a second IoU tracker when ByteTrack IDs are
+    available.
+    """
 
     def __init__(self):
         super().__init__(name="tracking")
@@ -21,23 +29,42 @@ class TrackingNode(PipelineNode):
         self._frame_count += 1
         boxes = context.properties.get("vehicle_boxes", [])
         classes = context.properties.get("vehicle_classes", [])
+        confidences = context.properties.get("vehicle_confidences", [])
         raw_track_ids = context.properties.get("vehicle_track_ids", [])
 
-        n = len(boxes)
-        track_ids = list(raw_track_ids[:n]) if raw_track_ids else []
-        while len(track_ids) < n:
-            track_ids.append(None)
+        filtered_boxes = []
+        filtered_classes = []
+        filtered_confidences = []
+        track_ids = []
 
-        # ByteTrack 已持续分配 ID，缺失的用负索引兜底
-        for i in range(n):
-            if track_ids[i] is None:
-                track_ids[i] = -(i + 1)
+        for index, box in enumerate(boxes):
+            if not isinstance(box, (list, tuple)) or len(box) != 4:
+                continue
+            raw_id = raw_track_ids[index] if index < len(raw_track_ids) else None
+            if raw_id is None:
+                continue
+            try:
+                track_id = int(raw_id)
+                bbox = [float(value) for value in box]
+            except (TypeError, ValueError):
+                continue
+            if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+                continue
 
+            filtered_boxes.append(bbox)
+            filtered_classes.append(classes[index] if index < len(classes) else "vehicle")
+            filtered_confidences.append(float(confidences[index]) if index < len(confidences) else 0.0)
+            track_ids.append(track_id)
+
+        context.properties["vehicle_boxes"] = filtered_boxes
+        context.properties["vehicle_classes"] = filtered_classes
+        context.properties["vehicle_confidences"] = filtered_confidences
         context.properties["track_ids"] = track_ids
-        context.properties["vehicle_boxes"] = boxes
-        context.properties["vehicle_classes"] = classes
 
         if self._frame_count <= 5 or self._frame_count % 30 == 0:
-            logger.info(f"[Tracking] Frame #{self._frame_count}: tracking {n} objects")
+            logger.info(
+                f"[Tracking] Frame #{self._frame_count}: "
+                f"bytetrack_tracks={len(track_ids)}"
+            )
 
         return context

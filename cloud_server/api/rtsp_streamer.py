@@ -47,7 +47,7 @@ class RTSPStreamManager:
         self._frame_counters = {}
         self._plate_db = {}
 
-    def start_stream(self, device_id, rtsp_url):
+    def start_stream(self, device_id, rtsp_url, camera_id=None, camera_name=None):
         with self._lock:
             if device_id in self.active_streams:
                 logger.warning(f"RTSP stream already active: {device_id}")
@@ -55,7 +55,7 @@ class RTSPStreamManager:
             thread = threading.Thread(
                 target=self._stream_worker, args=(device_id, rtsp_url), daemon=True
             )
-            self.active_streams[device_id] = {"thread": thread, "url": rtsp_url, "active": True}
+            self.active_streams[device_id] = {"thread": thread, "url": rtsp_url, "active": True, "camera_id": camera_id, "camera_name": camera_name}
             thread.start()
             logger.info(f"RTSP stream started: {device_id} -> {rtsp_url}")
             return True
@@ -71,7 +71,7 @@ class RTSPStreamManager:
     def get_status(self):
         with self._lock:
             return {
-                did: {"url": info["url"], "active": info["active"]}
+                did: {"url": info["url"], "active": info["active"], "camera_id": info.get("camera_id"), "camera_name": info.get("camera_name")}
                 for did, info in self.active_streams.items()
             }
 
@@ -87,10 +87,10 @@ class RTSPStreamManager:
                 dashboard_manager.broadcast(payload), self._loop
             )
 
-    def _broadcast_bytes(self, jpeg_bytes):
+    def _broadcast_bytes(self, jpeg_bytes, device_id):
         if self._loop.is_running():
             asyncio.run_coroutine_threadsafe(
-                dashboard_manager.broadcast_bytes(jpeg_bytes), self._loop
+                dashboard_manager.broadcast_bytes(jpeg_bytes, device_id), self._loop
             )
 
     def _open_ffmpeg(self, rtsp_url):
@@ -293,7 +293,7 @@ class RTSPStreamManager:
                     # only becomes meaningful when its pipeline nodes are enabled.
                     if using_fast_path:
                         payload = self._build_payload(device_id, None)
-                        self._broadcast_bytes(jpeg_bytes)
+                        self._broadcast_bytes(jpeg_bytes, device_id)
                         self._broadcast(payload)
                         sent_byte_count = len(jpeg_bytes)
                     else:
@@ -319,7 +319,7 @@ class RTSPStreamManager:
                                     submit_latest_frame_locked()
 
                         payload = self._build_payload(device_id, latest_context)
-                        self._broadcast_bytes(jpeg_bytes)
+                        self._broadcast_bytes(jpeg_bytes, device_id)
                         self._broadcast(payload)
                         sent_byte_count = len(jpeg_bytes)
 

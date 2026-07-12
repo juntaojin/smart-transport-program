@@ -1,10 +1,17 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { DashboardWebSocket } from '../services/ws';
-import { MapPin, Trash2, Check, RefreshCw, Crosshair } from 'lucide-react';
+import { DashboardWebSocket, type FrameMeta } from '../services/ws';
+import { streamAPI } from '../services/api';
+import { MapPin, Trash2, Check, RefreshCw, Crosshair, Move } from 'lucide-react';
+import roadModelV5 from '../assets/roadModelV5';
 
 interface Point { x: number; y: number }
+interface SandCamera { id: string; name: string; url: string }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
+const ROAD_MODEL = roadModelV5;
+const WORLD_WIDTH = ROAD_MODEL.metadata.extent.width;
+const WORLD_HEIGHT = ROAD_MODEL.metadata.extent.height;
+const WORLD_DISPLAY_SCALE = 1.6;
 
 async function ipmRequest(path: string, options: RequestInit = {}) {
   const url = `${API_BASE}${path}`;
@@ -40,21 +47,29 @@ export default function IPMCalibration() {
   const worldPtsRef = useRef(worldPoints);
   worldPtsRef.current = worldPoints;
   const [calibratedLanes, setCalibratedLanes] = useState<Record<string, string[]>>({});
-  const [cameraLanes, setCameraLanes] = useState<string[]>([]);
   const [hasFrame, setHasFrame] = useState(false);
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [currentVehicles, setCurrentVehicles] = useState<any[]>([]);
   const [transformedVehicles, setTransformedVehicles] = useState<any[]>([]);
+  const [sandCameras, setSandCameras] = useState<SandCamera[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState('default');
+  const [activeRtspDevices, setActiveRtspDevices] = useState<string[]>([]);
+  const [videoAspectRatio, setVideoAspectRatio] = useState('16 / 9');
   const vehicleDotsRef = useRef<any[]>([]);
   vehicleDotsRef.current = transformedVehicles;
 
   const cameraCanvasRef = useRef<HTMLCanvasElement>(null);
   const worldCanvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<string | null>(null);
+  const selectedDeviceRef = useRef(selectedDeviceId);
+  selectedDeviceRef.current = selectedDeviceId;
+  const frameUrlsRef = useRef<Record<string, string>>({});
+  const payloadsRef = useRef<Record<string, any>>({});
   const wsRef = useRef<DashboardWebSocket | null>(null);
-  const blobUrlRef = useRef<string | null>(null);
   const camSizeRef = useRef({ w: 0, h: 0 });
+  const videoAspectRatioRef = useRef(videoAspectRatio);
+  videoAspectRatioRef.current = videoAspectRatio;
 
   useEffect(() => { if (message) { const t = setTimeout(() => setMessage(null), 3000); return () => clearTimeout(t); } }, [message]);
 
@@ -87,46 +102,128 @@ export default function IPMCalibration() {
     })();
   }, [cameraId, laneId]);
 
-  // Fetch lanes for current camera
-  useEffect(() => {
-    if (!cameraId) { setCameraLanes([]); return; }
-    (async () => {
-      try {
-        const res = await ipmAPI.getCameraConfig(cameraId);
-        if (res.code === 200 && res.data?.lanes) {
-          setCameraLanes(Object.keys(res.data.lanes));
-        } else {
-          setCameraLanes([]);
-        }
-      } catch { setCameraLanes([]); }
-    })();
-  }, [cameraId]);
-
   const selectLane = (lid: string) => { setLaneId(lid); };
+
+  useEffect(() => {
+    const loadSandCameras = async () => {
+      try {
+        const res = await streamAPI.cameras();
+        if (res.code === 200 && Array.isArray(res.data)) setSandCameras(res.data);
+      } catch {}
+    };
+    loadSandCameras();
+  }, []);
+
+  const activeSandCameras = sandCameras.filter(camera => activeRtspDevices.includes(`rtsp_${camera.id}`));
+  const cameraLanes = calibratedLanes[cameraId] || [];
+
+  const normalizeDeviceId = (deviceId?: string) => deviceId?.startsWith('rtsp_') ? deviceId : 'default';
+
+  const selectDevice = (deviceId: string) => {
+    setSelectedDeviceId(deviceId);
+    frameRef.current = frameUrlsRef.current[deviceId] || null;
+    setHasFrame(Boolean(frameRef.current));
+    const payload = payloadsRef.current[deviceId];
+    setCurrentVehicles(payload?.vehicles || []);
+    const rtspCameraId = deviceId.startsWith('rtsp_') ? deviceId.slice(5) : deviceId;
+    setCameraId(rtspCameraId);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncRtspStatus = async () => {
+      try {
+        const res = await streamAPI.status();
+        if (cancelled || res.code !== 200 || !res.data) return;
+
+        const activeIds = Object.entries(res.data)
+          .filter(([deviceId, info]: [string, any]) => deviceId.startsWith('rtsp_') && info?.active)
+          .map(([deviceId]) => deviceId);
+        const activeSet = new Set(activeIds);
+
+        for (const [deviceId, url] of Object.entries(frameUrlsRef.current)) {
+          if (deviceId.startsWith('rtsp_') && !activeSet.has(deviceId)) {
+            if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url);
+            delete frameUrlsRef.current[deviceId];
+          }
+        }
+        for (const deviceId of Object.keys(payloadsRef.current)) {
+          if (deviceId.startsWith('rtsp_') && !activeSet.has(deviceId)) delete payloadsRef.current[deviceId];
+        }
+
+        setActiveRtspDevices(activeIds);
+
+        if (selectedDeviceRef.current.startsWith('rtsp_') && !activeSet.has(selectedDeviceRef.current)) {
+          const fallback = activeIds[0] || 'default';
+          selectedDeviceRef.current = fallback;
+          setSelectedDeviceId(fallback);
+          frameRef.current = frameUrlsRef.current[fallback] || null;
+          setHasFrame(Boolean(frameRef.current));
+          const payload = payloadsRef.current[fallback];
+          setCurrentVehicles(payload?.vehicles || []);
+          setCameraId(fallback.startsWith('rtsp_') ? fallback.slice(5) : fallback);
+        }
+      } catch {}
+    };
+
+    syncRtspStatus();
+    const timer = window.setInterval(syncRtspStatus, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   // WebSocket for camera feed
   useEffect(() => {
-    const onImage = (blob: Blob) => {
+    const onImage = (blob: Blob, meta: FrameMeta) => {
+      const deviceId = normalizeDeviceId(meta.deviceId);
       const url = URL.createObjectURL(blob);
-      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
-      blobUrlRef.current = url;
-      frameRef.current = url;
-      if (!hasFrame) setHasFrame(true);
+      const previous = frameUrlsRef.current[deviceId];
+      if (previous) URL.revokeObjectURL(previous);
+      frameUrlsRef.current[deviceId] = url;
+      if (deviceId.startsWith('rtsp_')) {
+        setActiveRtspDevices(prev => prev.includes(deviceId) ? prev : [...prev, deviceId]);
+        if (selectedDeviceRef.current === 'default' && !frameUrlsRef.current.default) {
+          selectedDeviceRef.current = deviceId;
+          setSelectedDeviceId(deviceId);
+          setCameraId(deviceId.slice(5));
+          frameRef.current = url;
+          setHasFrame(true);
+        }
+      }
+      if (selectedDeviceRef.current === deviceId) {
+        frameRef.current = url;
+        setHasFrame(true);
+      }
     };
     const onMessage = (data: any) => {
-      if (data.image) {
-        if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
-        frameRef.current = data.image;
-        if (!hasFrame) setHasFrame(true);
+      const deviceId = normalizeDeviceId(data.device_id);
+      payloadsRef.current[deviceId] = data;
+      if (deviceId.startsWith('rtsp_')) {
+        setActiveRtspDevices(prev => prev.includes(deviceId) ? prev : [...prev, deviceId]);
+        if (selectedDeviceRef.current === 'default' && !frameUrlsRef.current.default) {
+          selectedDeviceRef.current = deviceId;
+          setSelectedDeviceId(deviceId);
+          setCameraId(deviceId.slice(5));
+          if (data.vehicles) setCurrentVehicles(data.vehicles);
+        }
       }
-      if (data.vehicles) setCurrentVehicles(data.vehicles);
+      if (selectedDeviceRef.current === deviceId && data.vehicles) {
+        setCurrentVehicles(data.vehicles);
+      }
     };
     const onStatus = (s: any) => setWsStatus(s);
     wsRef.current = new DashboardWebSocket(onMessage, onImage, onStatus);
     wsRef.current.connect();
-    return () => { wsRef.current?.stop(); if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current); };
+    return () => {
+      wsRef.current?.stop();
+      for (const url of Object.values(frameUrlsRef.current)) {
+        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+      }
+    };
   }, []);
-
   // Render camera feed canvas
   useEffect(() => {
     const canvas = cameraCanvasRef.current;
@@ -161,6 +258,11 @@ export default function IPMCalibration() {
           const sw = img.naturalWidth * scale, sh = img.naturalHeight * scale;
           const sx = (cw - sw) / 2, sy = (ch - sh) / 2;
           camSizeRef.current = { w: img.naturalWidth, h: img.naturalHeight };
+          const nextAspect = img.naturalWidth + ' / ' + img.naturalHeight;
+          if (videoAspectRatioRef.current !== nextAspect) {
+            videoAspectRatioRef.current = nextAspect;
+            setVideoAspectRatio(nextAspect);
+          }
           ctx.drawImage(img, sx, sy, sw, sh);
           drawPoints(ctx, camPtsRef.current, sx, sy, sw, sh, img.naturalWidth, img.naturalHeight);
         };
@@ -172,7 +274,65 @@ export default function IPMCalibration() {
     return () => { animating = false; };
   }, []);
 
-  // Render world canvas (whiteboard)
+  const drawRoadModelBackground = (ctx: CanvasRenderingContext2D, cw: number, ch: number) => {
+    const sx = cw / WORLD_WIDTH;
+    const sy = ch / WORLD_HEIGHT;
+
+    ctx.save();
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, cw, ch);
+
+    ctx.strokeStyle = 'rgba(51, 65, 85, 0.75)';
+    ctx.lineWidth = 1;
+    for (let x = 0; x <= WORLD_WIDTH; x += 80) {
+      ctx.beginPath(); ctx.moveTo(x * sx, 0); ctx.lineTo(x * sx, ch); ctx.stroke();
+    }
+    for (let y = 0; y <= WORLD_HEIGHT; y += 80) {
+      ctx.beginPath(); ctx.moveTo(0, y * sy); ctx.lineTo(cw, y * sy); ctx.stroke();
+    }
+
+    for (const road of ROAD_MODEL.roads) {
+      const points = road.centerline;
+      if (!points || points.length < 2) continue;
+
+      ctx.beginPath();
+      points.forEach(([x, y], index) => {
+        const px = x * sx;
+        const py = y * sy;
+        if (index === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      });
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = 'rgba(2, 6, 23, 0.92)';
+      ctx.lineWidth = 18;
+      ctx.stroke();
+
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.88)';
+      ctx.lineWidth = 10;
+      ctx.stroke();
+
+      ctx.strokeStyle = 'rgba(226, 232, 240, 0.30)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([12, 12]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    for (const node of ROAD_MODEL.nodes) {
+      const px = node.x * sx;
+      const py = node.y * sy;
+      ctx.beginPath(); ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.95)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(226, 232, 240, 0.65)'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+
+    ctx.strokeStyle = 'rgba(59, 130, 246, 0.55)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(1.5, 1.5, cw - 3, ch - 3);
+    ctx.restore();
+  };
+
+  // Render world canvas (read-only sand-table road model background)
   useEffect(() => {
     const canvas = worldCanvasRef.current;
     if (!canvas) return;
@@ -180,22 +340,16 @@ export default function IPMCalibration() {
     if (!ctx) return;
 
     const redrawWorld = () => {
-      const cw = canvas.width || 600, ch = canvas.height || 400;
-      ctx.fillStyle = '#1e293b';
-      ctx.fillRect(0, 0, cw, ch);
-      // Grid
-      ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-      ctx.lineWidth = 1;
-      for (let x = 0; x < cw; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ch); ctx.stroke(); }
-      for (let y = 0; y < ch; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cw, y); ctx.stroke(); }
+      const cw = canvas.width || WORLD_WIDTH, ch = canvas.height || WORLD_HEIGHT;
+      drawRoadModelBackground(ctx, cw, ch);
 
       // Calibration points (green)
-      drawPoints(ctx, worldPtsRef.current, 0, 0, cw, ch, 800, 600);
+      drawPoints(ctx, worldPtsRef.current, 0, 0, cw, ch, WORLD_WIDTH, WORLD_HEIGHT);
       // Transformed vehicle dots (red)
       for (const v of vehicleDotsRef.current) {
         if (!v.world) continue;
-        const px = v.world[0] / 800 * cw;
-        const py = v.world[1] / 600 * ch;
+        const px = v.world[0] / WORLD_WIDTH * cw;
+        const py = v.world[1] / WORLD_HEIGHT * ch;
         ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(239, 68, 68, 0.8)'; ctx.fill();
         ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
@@ -206,8 +360,8 @@ export default function IPMCalibration() {
 
     const parent = canvas.parentElement;
     const ro = new ResizeObserver(() => {
-      canvas.width = canvas.clientWidth;
-      canvas.height = canvas.clientHeight;
+      canvas.width = WORLD_WIDTH;
+      canvas.height = WORLD_HEIGHT;
       redrawWorld();
     });
     if (parent) ro.observe(parent);
@@ -215,7 +369,6 @@ export default function IPMCalibration() {
     redrawWorld();
     return () => { ro.disconnect(); };
   }, [worldPoints, transformedVehicles]);
-
   const drawPoints = (ctx: CanvasRenderingContext2D, points: Point[], sx: number, sy: number, sw: number, sh: number, imgW: number, imgH: number) => {
     for (let i = 0; i < points.length; i++) {
       const px = sx + points[i].x / imgW * sw;
@@ -244,7 +397,8 @@ export default function IPMCalibration() {
     const scale = Math.min(cw / camSizeRef.current.w, ch / camSizeRef.current.h);
     const sw = camSizeRef.current.w * scale, sh = camSizeRef.current.h * scale;
     const sx = (cw - sw) / 2, sy = (ch - sh) / 2;
-    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const cx = (e.clientX - rect.left) * (cw / rect.width);
+    const cy = (e.clientY - rect.top) * (ch / rect.height);
     const imgX = (cx - sx) / sw * camSizeRef.current.w;
     const imgY = (cy - sy) / sh * camSizeRef.current.h;
     if (imgX < 0 || imgY < 0 || imgX > camSizeRef.current.w || imgY > camSizeRef.current.h) return;
@@ -254,13 +408,12 @@ export default function IPMCalibration() {
   const handleWorldClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (worldPoints.length >= 4) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const cw = e.currentTarget.width, ch = e.currentTarget.height;
-    const scale = Math.min(cw / 800, ch / 600);
-    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
-    const imgX = cx / scale;
-    const imgY = cy / scale;
-    if (imgX < 0 || imgY < 0 || imgX > 800 || imgY > 600) return;
-    setWorldPoints(prev => [...prev, { x: Math.round(imgX), y: Math.round(imgY) }]);
+    const cw = e.currentTarget.width || WORLD_WIDTH;
+    const ch = e.currentTarget.height || WORLD_HEIGHT;
+    const worldX = (e.clientX - rect.left) * (cw / rect.width);
+    const worldY = (e.clientY - rect.top) * (ch / rect.height);
+    if (worldX < 0 || worldY < 0 || worldX > WORLD_WIDTH || worldY > WORLD_HEIGHT) return;
+    setWorldPoints(prev => [...prev, { x: Math.round(worldX), y: Math.round(worldY) }]);
   };
 
   const handleCalibrate = async () => {
@@ -336,6 +489,33 @@ export default function IPMCalibration() {
         </div>
       )}
 
+      {activeSandCameras.length > 0 && (
+        <div className="glass-panel rounded-3xl p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400 mr-2">沙盘摄像头</span>
+            <button
+              type="button"
+              onClick={() => selectDevice('default')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${selectedDeviceId === 'default' ? 'bg-blue-500/20 text-blue-300 border-blue-500/40' : 'bg-slate-900/50 text-slate-400 border-white/10 hover:text-slate-200'}`}
+            >
+              默认推流
+            </button>
+            {activeSandCameras.map(camera => {
+              const deviceId = `rtsp_${camera.id}`;
+              return (
+                <button
+                  key={camera.id}
+                  type="button"
+                  onClick={() => selectDevice(deviceId)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${selectedDeviceId === deviceId ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-slate-900/50 text-slate-400 border-white/10 hover:text-slate-200'}`}
+                >
+                  {camera.id} {camera.name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {/* Camera ID + Lane ID */}
       <div className="space-y-3">
         <div className="flex flex-wrap items-end gap-4">
@@ -389,9 +569,9 @@ export default function IPMCalibration() {
       </div>
 
       {/* Dual panels */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
         {/* Camera panel */}
-        <div className="glass-panel rounded-3xl p-5">
+        <div className="glass-panel rounded-3xl p-6">
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold text-slate-200 flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${wsStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
@@ -402,8 +582,8 @@ export default function IPMCalibration() {
               <button onClick={() => setCameraPoints([])} className="text-xs text-slate-500 hover:text-rose-400 transition-colors">清除</button>
             </div>
           </div>
-          <div className="relative aspect-video rounded-xl overflow-hidden bg-slate-950 border border-slate-700">
-            <canvas ref={cameraCanvasRef} onClick={handleCameraClick} className="w-full h-full block" style={{ cursor: cameraPoints.length < 4 ? 'crosshair' : 'default' }} />
+          <div className="relative w-full max-h-[62vh] rounded-xl overflow-hidden bg-slate-950 border border-slate-700" style={{ aspectRatio: videoAspectRatio }}>
+            <canvas ref={cameraCanvasRef} onClick={handleCameraClick} className="absolute inset-0 w-full h-full block" style={{ cursor: cameraPoints.length < 4 ? 'crosshair' : 'default' }} />
             {!hasFrame && (
               <div className="absolute inset-0 flex items-center justify-center bg-slate-950">
                 <div className="text-center">
@@ -416,16 +596,16 @@ export default function IPMCalibration() {
         </div>
 
         {/* World panel */}
-        <div className="glass-panel rounded-3xl p-5">
+        <div className="glass-panel rounded-3xl p-6">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold text-slate-200">俯视图（白板）</h3>
+            <h3 className="font-semibold text-slate-200 flex items-center gap-2"><Move size={16} className="text-blue-400" /> 俯视图（白板）</h3>
             <div className="flex items-center gap-3">
               <span className="text-xs text-slate-400">{worldPoints.length}/4 点</span>
               <button onClick={() => setWorldPoints([])} className="text-xs text-slate-500 hover:text-rose-400 transition-colors">清除</button>
             </div>
           </div>
-          <div className="relative aspect-video rounded-xl overflow-hidden bg-slate-800 border border-slate-700">
-            <canvas ref={worldCanvasRef} onClick={handleWorldClick} className="w-full h-full block" style={{ cursor: worldPoints.length < 4 ? 'crosshair' : 'default' }} />
+          <div className="relative h-[720px] xl:h-[760px] rounded-xl overflow-auto bg-slate-950 border border-slate-700">
+            <canvas ref={worldCanvasRef} onClick={handleWorldClick} className="block" style={{ width: `${WORLD_WIDTH * WORLD_DISPLAY_SCALE}px`, height: `${WORLD_HEIGHT * WORLD_DISPLAY_SCALE}px`, cursor: worldPoints.length < 4 ? 'crosshair' : 'grab' }} />
           </div>
         </div>
       </div>

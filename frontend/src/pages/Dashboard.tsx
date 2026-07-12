@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
-import { DashboardWebSocket } from '../services/ws';
-import { statsAPI, configAPI } from '../services/api';
+import { DashboardWebSocket, type FrameMeta } from '../services/ws';
+import { statsAPI, configAPI, streamAPI } from '../services/api';
 import { Cpu, Database, Activity, HardDrive, Wifi, ShieldAlert, Car, Navigation, FileText, PenTool, Save, X, Trash2 } from 'lucide-react';
 
 interface Vehicle {
@@ -8,6 +8,13 @@ interface Vehicle {
   class: string;
   box: number[];
   plate: string;
+  world_coord?: number[];
+}
+
+interface SandCamera {
+  id: string;
+  name: string;
+  url: string;
 }
 
 interface Violation {
@@ -39,9 +46,17 @@ export default function Dashboard() {
   const [violations, setViolations] = useState<Violation[]>([]);
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [plateOcrEnabled, setPlateOcrEnabled] = useState(false);
+  const [sandCameras, setSandCameras] = useState<SandCamera[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState('default');
+  const [activeRtspDevices, setActiveRtspDevices] = useState<string[]>([]);
+  const [videoAspectRatio, setVideoAspectRatio] = useState('16 / 9');
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const latestFrameRef = useRef<string | null>(null);
+  const selectedDeviceRef = useRef(selectedDeviceId);
+  const frameUrlsRef = useRef<Record<string, string>>({});
+  const payloadsRef = useRef<Record<string, any>>({});
+  const aspectRef = useRef(videoAspectRatio);
   
   // Zone drawing state (use refs for canvas render closure)
   const [isDrawing, setIsDrawing] = useState(false);
@@ -54,6 +69,8 @@ export default function Dashboard() {
   const vehiclesForRender = useRef<Vehicle[]>([]);
   const anomaliesForRender = useRef<Anomaly[]>([]);
   // Keep refs in sync with state for render closure
+  selectedDeviceRef.current = selectedDeviceId;
+  aspectRef.current = videoAspectRatio;
   zonesForRender.current = existingZones;
   pointsForRender.current = currentZonePoints;
   vehiclesForRender.current = vehicles;
@@ -140,44 +157,141 @@ export default function Dashboard() {
     loadZones();
   }, []);
 
-  // Connect WebSocket
-  const blobUrlRef = useRef<string | null>(null);
   useEffect(() => {
-    const onImage = (blob: Blob) => {
+    const loadSandCameras = async () => {
+      try {
+        const res = await streamAPI.cameras();
+        if (res.code === 200 && Array.isArray(res.data)) {
+          setSandCameras(res.data);
+        }
+      } catch (err) {
+        console.error('Failed to load sand table cameras:', err);
+      }
+    };
+    loadSandCameras();
+  }, []);
+
+  const activeSandCameras = sandCameras.filter(camera => activeRtspDevices.includes(`rtsp_${camera.id}`));
+
+  const normalizeDeviceId = (deviceId?: string) => deviceId?.startsWith('rtsp_') ? deviceId : 'default';
+
+  const applyPayload = (data: any) => {
+    if (data.fps !== undefined) setFps(data.fps);
+    if (data.congestion_level) setCongestion(data.congestion_level);
+    if (data.vehicles) setVehicles(data.vehicles);
+    if (data.violations) setViolations(data.violations);
+    if (data.anomalies) setAnomalies(data.anomalies);
+
+    if (data.system_metrics) {
+      setMetrics({
+        cpu_usage: data.system_metrics.cpu.percent,
+        gpu_usage: data.system_metrics.gpu ? data.system_metrics.gpu.load : null,
+        memory_usage: data.system_metrics.memory.percent,
+        disk_usage: data.system_metrics.disk.percent,
+        network_rx: data.system_metrics.network.rx_mbps,
+        network_tx: data.system_metrics.network.tx_mbps,
+        cpu_details: data.system_metrics.cpu,
+        memory_details: data.system_metrics.memory,
+        disk_details: data.system_metrics.disk,
+        gpu_details: data.system_metrics.gpu
+      });
+    }
+  };
+
+  const selectDevice = (deviceId: string) => {
+    setSelectedDeviceId(deviceId);
+    const frameUrl = frameUrlsRef.current[deviceId];
+    latestFrameRef.current = frameUrl || null;
+    setHasFrame(Boolean(frameUrl));
+    const payload = payloadsRef.current[deviceId];
+    if (payload) applyPayload(payload);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncRtspStatus = async () => {
+      try {
+        const res = await streamAPI.status();
+        if (cancelled || res.code !== 200 || !res.data) return;
+
+        const activeIds = Object.entries(res.data)
+          .filter(([deviceId, info]: [string, any]) => deviceId.startsWith('rtsp_') && info?.active)
+          .map(([deviceId]) => deviceId);
+        const activeSet = new Set(activeIds);
+
+        for (const [deviceId, url] of Object.entries(frameUrlsRef.current)) {
+          if (deviceId.startsWith('rtsp_') && !activeSet.has(deviceId)) {
+            if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url);
+            delete frameUrlsRef.current[deviceId];
+          }
+        }
+        for (const deviceId of Object.keys(payloadsRef.current)) {
+          if (deviceId.startsWith('rtsp_') && !activeSet.has(deviceId)) delete payloadsRef.current[deviceId];
+        }
+
+        setActiveRtspDevices(activeIds);
+
+        if (selectedDeviceRef.current.startsWith('rtsp_') && !activeSet.has(selectedDeviceRef.current)) {
+          const fallback = activeIds[0] || 'default';
+          selectedDeviceRef.current = fallback;
+          setSelectedDeviceId(fallback);
+          latestFrameRef.current = frameUrlsRef.current[fallback] || null;
+          setHasFrame(Boolean(latestFrameRef.current));
+          const payload = payloadsRef.current[fallback];
+          if (payload) applyPayload(payload);
+        }
+      } catch {}
+    };
+
+    syncRtspStatus();
+    const timer = window.setInterval(syncRtspStatus, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  // Connect WebSocket
+  useEffect(() => {
+    const onImage = (blob: Blob, meta: FrameMeta) => {
+      const deviceId = normalizeDeviceId(meta.deviceId);
       const url = URL.createObjectURL(blob);
-      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
-      blobUrlRef.current = url;
-      latestFrameRef.current = url;
-      if (!hasFrame) setHasFrame(true);
+      const previous = frameUrlsRef.current[deviceId];
+      if (previous) URL.revokeObjectURL(previous);
+      frameUrlsRef.current[deviceId] = url;
+      if (deviceId.startsWith('rtsp_')) {
+        setActiveRtspDevices(prev => prev.includes(deviceId) ? prev : [...prev, deviceId]);
+        if (selectedDeviceRef.current === 'default' && !frameUrlsRef.current.default) {
+          selectedDeviceRef.current = deviceId;
+          setSelectedDeviceId(deviceId);
+          latestFrameRef.current = url;
+          setHasFrame(true);
+        }
+      }
+      if (selectedDeviceRef.current === deviceId) {
+        latestFrameRef.current = url;
+        setHasFrame(true);
+      }
     };
 
     const onMessage = (data: any) => {
+      const deviceId = normalizeDeviceId(data.device_id);
       if (data.image) {
         latestFrameRef.current = data.image;
-        if (!hasFrame) setHasFrame(true);
+        frameUrlsRef.current[deviceId] = data.image;
+        if (selectedDeviceRef.current === deviceId) setHasFrame(true);
       }
-      if (data.fps !== undefined) setFps(data.fps);
-      if (data.congestion_level) setCongestion(data.congestion_level);
-      if (data.vehicles) setVehicles(data.vehicles);
-      if (data.violations) setViolations(data.violations);
-      if (data.anomalies) setAnomalies(data.anomalies);
-      
-      // Update system metrics real-time values from websocket broadcast
-      if (data.system_metrics) {
-        setMetrics({
-          cpu_usage: data.system_metrics.cpu.percent,
-          gpu_usage: data.system_metrics.gpu ? data.system_metrics.gpu.load : null,
-          memory_usage: data.system_metrics.memory.percent,
-          disk_usage: data.system_metrics.disk.percent,
-          network_rx: data.system_metrics.network.rx_mbps,
-          network_tx: data.system_metrics.network.tx_mbps,
-          
-          cpu_details: data.system_metrics.cpu,
-          memory_details: data.system_metrics.memory,
-          disk_details: data.system_metrics.disk,
-          gpu_details: data.system_metrics.gpu
-        });
+      payloadsRef.current[deviceId] = data;
+      if (deviceId.startsWith('rtsp_')) {
+        setActiveRtspDevices(prev => prev.includes(deviceId) ? prev : [...prev, deviceId]);
+        if (selectedDeviceRef.current === 'default' && !frameUrlsRef.current.default) {
+          selectedDeviceRef.current = deviceId;
+          setSelectedDeviceId(deviceId);
+          applyPayload(data);
+        }
       }
+      if (selectedDeviceRef.current === deviceId) applyPayload(data);
     };
 
     const onStatus = (status: any) => {
@@ -191,13 +305,12 @@ export default function Dashboard() {
       if (wsRef.current) {
         wsRef.current.stop();
       }
-      if (blobUrlRef.current) {
-        URL.revokeObjectURL(blobUrlRef.current);
-        blobUrlRef.current = null;
+      for (const url of Object.values(frameUrlsRef.current)) {
+        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
       }
+      frameUrlsRef.current = {};
     };
   }, []);
-
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -249,6 +362,11 @@ export default function Dashboard() {
           // Draw zones overlay (use refs to avoid stale closure)
           const fw = img.naturalWidth;
           const fh = img.naturalHeight;
+          const nextAspect = `${fw} / ${fh}`;
+          if (aspectRef.current !== nextAspect) {
+            aspectRef.current = nextAspect;
+            setVideoAspectRatio(nextAspect);
+          }
           frameSizeRef.current = { w: fw, h: fh, offX: sx, offY: sy, scaleW: sw, scaleH: sh };
           // AI results update independently from the video. Reuse the latest boxes
           // on every incoming frame so slow inference never stalls video playback.
@@ -531,10 +649,10 @@ export default function Dashboard() {
       </div>
 
       {/* 主面板内容 */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
         
         {/* 视频推流区 (占 2/3 宽度) */}
-        <div className="lg:col-span-2 glass-panel-glow rounded-3xl p-5 flex flex-col justify-between">
+        <div className="xl:col-span-3 glass-panel-glow rounded-3xl p-5 flex flex-col justify-between">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <span className={`w-2.5 h-2.5 rounded-full ${wsStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
@@ -550,7 +668,33 @@ export default function Dashboard() {
             </div>
           </div>
           
-          <div className="relative aspect-video rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 flex justify-center items-center" onClick={handleCanvasClick} style={{ cursor: isDrawing ? 'crosshair' : 'default' }}>
+          {activeSandCameras.length > 0 && (
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => selectDevice('default')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${selectedDeviceId === 'default' ? 'bg-blue-500/20 text-blue-300 border-blue-500/40' : 'bg-slate-900/50 text-slate-400 border-white/10 hover:text-slate-200'}`}
+              >
+                边端默认
+              </button>
+              {activeSandCameras.map(camera => {
+                const deviceId = `rtsp_${camera.id}`;
+                const active = Boolean(frameUrlsRef.current[deviceId] || payloadsRef.current[deviceId]);
+                return (
+                  <button
+                    key={camera.id}
+                    type="button"
+                    onClick={() => selectDevice(deviceId)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${selectedDeviceId === deviceId ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : active ? 'bg-slate-900/60 text-slate-200 border-emerald-500/20' : 'bg-slate-900/40 text-slate-500 border-white/10 hover:text-slate-300'}`}
+                  >
+                    {camera.id} {camera.name}
+                  </button>
+                );
+              })}
+              <span className="text-xs text-slate-500">只显示边端正在推流的沙盘摄像头</span>
+            </div>
+          )}
+          <div className="relative rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 flex justify-center items-center min-h-[360px]" onClick={handleCanvasClick} style={{ cursor: isDrawing ? 'crosshair' : 'default', aspectRatio: videoAspectRatio }}>
             <canvas ref={canvasRef} className="w-full h-full block" />
             {!hasFrame && (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8 bg-slate-950">
