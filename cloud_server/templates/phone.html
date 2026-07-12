@@ -280,6 +280,11 @@
                 </select>
             </div>
             <div class="hint">沙盘摄像头由云端服务器直接拉取RTSP流，无需手机摄像头</div>
+            <div class="config-row">
+                <label for="rtsp-max-streams">同时推流数量</label>
+                <input id="rtsp-max-streams" type="number" min="1" max="12" value="12" style="width: 90px;">
+            </div>
+            <div class="hint">沙盘模式会从 live1 开始批量拉取，最多 12 路；如果画面卡顿请降低数量。</div>
         </div>
 
         <button id="btn-permission">授予摄像头权限</button>
@@ -315,6 +320,7 @@
         const videoFileControls = document.getElementById('video-file-controls');
         const rtspControls = document.getElementById('rtsp-controls');
         const rtspCameraSelect = document.getElementById('rtsp-camera-select');
+        const rtspMaxStreams = document.getElementById('rtsp-max-streams');
 
         let ws = null;
         let stream = null;
@@ -708,7 +714,7 @@
                 const resp = await fetch(`${apiBase}/api/stream/rtsp/start`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ camera_id: cameraId })
+                    body: JSON.stringify({ start_all: true, max_streams: Math.max(1, Math.min(12, parseInt(rtspMaxStreams.value || '12', 10))) })
                 });
                 const result = await resp.json();
                 if (result.code === 200) {
@@ -721,8 +727,9 @@
                     serverAddr.disabled = true;
                     deviceIdInput.disabled = true;
                     rtspCameraSelect.disabled = true;
+                    rtspMaxStreams.disabled = true;
                     document.querySelectorAll('.mode-tab').forEach(t => t.style.pointerEvents = 'none');
-                    infoRes.textContent = cameraId;
+                    infoRes.textContent = 'sand table ' + (result.data?.max_streams || rtspMaxStreams.value) + ' streams';
                     infoSent.textContent = 'RTSP';
                     fpsDisplay.textContent = '服务器拉流';
                 } else if (result.code === 409) {
@@ -746,7 +753,7 @@
                     await fetch(`${apiBase}/api/stream/rtsp/stop`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ camera_id: cameraId })
+                        body: JSON.stringify({ camera_id: 'all' })
                     });
                 } catch (e) {
                     console.error('RTSP stop error:', e);
@@ -761,6 +768,7 @@
             serverAddr.disabled = false;
             deviceIdInput.disabled = false;
             rtspCameraSelect.disabled = false;
+            rtspMaxStreams.disabled = false;
             document.querySelectorAll('.mode-tab').forEach(t => t.style.pointerEvents = '');
             infoRes.textContent = '-';
             infoSent.textContent = '0';

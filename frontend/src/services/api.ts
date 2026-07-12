@@ -63,3 +63,24 @@ export const configAPI = {
   }),
   health: () => request('/health'),
 };
+// Sand-table RTSP stream controls
+export const streamAPI = {
+  cameras: () => request('/stream/rtsp/cameras'),
+  status: () => request('/stream/rtsp/status'),
+  startAll: (maxStreams: number = 12) => request('/stream/rtsp/start', {
+    method: 'POST',
+    body: JSON.stringify({ start_all: true, max_streams: maxStreams }),
+  }),
+  startOne: (cameraId: string) => request('/stream/rtsp/start', {
+    method: 'POST',
+    body: JSON.stringify({ camera_id: cameraId }),
+  }),
+  stopAll: () => request('/stream/rtsp/stop', {
+    method: 'POST',
+    body: JSON.stringify({ camera_id: 'all' }),
+  }),
+  stopOne: (cameraId: string) => request('/stream/rtsp/stop', {
+    method: 'POST',
+    body: JSON.stringify({ camera_id: cameraId }),
+  }),
+};

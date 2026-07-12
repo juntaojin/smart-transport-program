@@ -395,7 +395,29 @@ async def list_sand_table_cameras():
 
 @router.post("/stream/rtsp/start")
 async def start_rtsp_stream(payload: dict, request: Request):
-    """Start pulling from a sand table RTSP camera"""
+    """Start one sand-table RTSP camera or a limited batch of cameras."""
+    rtsp_manager = request.app.state.rtsp_manager
+    start_all = bool(payload.get("start_all"))
+    max_streams = int(payload.get("max_streams") or (len(SAND_TABLE_CAMERAS) if start_all else 1))
+    max_streams = max(1, min(max_streams, len(SAND_TABLE_CAMERAS)))
+
+    if start_all:
+        started = []
+        already_active = []
+        for camera in SAND_TABLE_CAMERAS[:max_streams]:
+            device_id = f"rtsp_{camera['id']}"
+            success = rtsp_manager.start_stream(device_id, camera["url"], camera["id"], camera["name"])
+            item = {"camera_id": camera["id"], "name": camera["name"], "device_id": device_id}
+            if success:
+                started.append(item)
+            else:
+                already_active.append(item)
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {"started": started, "already_active": already_active, "max_streams": max_streams},
+        }
+
     camera_id = payload.get("camera_id")
     if not camera_id:
         raise HTTPException(status_code=400, detail="camera_id is required")
@@ -404,9 +426,8 @@ async def start_rtsp_stream(payload: dict, request: Request):
     if not camera:
         raise HTTPException(status_code=404, detail=f"Camera '{camera_id}' not found")
 
-    rtsp_manager = request.app.state.rtsp_manager
     device_id = f"rtsp_{camera_id}"
-    success = rtsp_manager.start_stream(device_id, camera["url"])
+    success = rtsp_manager.start_stream(device_id, camera["url"], camera["id"], camera["name"])
     if not success:
         return {"code": 409, "message": "Stream already active", "data": {"camera_id": camera_id}}
 
@@ -415,13 +436,21 @@ async def start_rtsp_stream(payload: dict, request: Request):
 
 @router.post("/stream/rtsp/stop")
 async def stop_rtsp_stream(payload: dict, request: Request):
-    """Stop pulling from a sand table RTSP camera"""
+    """Stop one sand-table RTSP camera, or all active sand-table cameras."""
     camera_id = payload.get("camera_id")
     if not camera_id:
         raise HTTPException(status_code=400, detail="camera_id is required")
 
-    device_id = f"rtsp_{camera_id}"
     rtsp_manager = request.app.state.rtsp_manager
+    if camera_id == "all":
+        stopped = []
+        for camera in SAND_TABLE_CAMERAS:
+            device_id = f"rtsp_{camera['id']}"
+            if rtsp_manager.stop_stream(device_id):
+                stopped.append(camera["id"])
+        return {"code": 200, "message": "success", "data": {"stopped": stopped}}
+
+    device_id = f"rtsp_{camera_id}"
     success = rtsp_manager.stop_stream(device_id)
     if not success:
         return {"code": 404, "message": "No active stream for this camera", "data": None}

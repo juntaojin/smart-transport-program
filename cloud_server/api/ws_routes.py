@@ -42,10 +42,14 @@ class ConnectionManager:
             except Exception:
                 pass
 
-    async def broadcast_bytes(self, data: bytes):
+    async def broadcast_bytes(self, data: bytes, device_id: str | None = None):
+        payload = data
+        if device_id:
+            header = f"STJ1 {device_id}\n".encode("utf-8")
+            payload = header + data
         for connection in self.active_connections:
             try:
-                await connection.send_bytes(data)
+                await connection.send_bytes(payload)
             except Exception:
                 pass
 
@@ -364,7 +368,7 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                 inference_state["latest_context"] = None
 
             payload = build_payload(inference_state["latest_context"])
-            asyncio.create_task(dashboard_manager.broadcast_bytes(data))
+            asyncio.create_task(dashboard_manager.broadcast_bytes(data, device_id))
             asyncio.create_task(dashboard_manager.broadcast(payload))
             broadcast_count += 1
 

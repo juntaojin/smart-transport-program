@@ -1,10 +1,14 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { DashboardWebSocket } from '../services/ws';
-import { MapPin, Trash2, Check, RefreshCw, Crosshair } from 'lucide-react';
+import { DashboardWebSocket, type FrameMeta } from '../services/ws';
+import { streamAPI } from '../services/api';
+import { MapPin, Trash2, Check, RefreshCw, Crosshair, Move } from 'lucide-react';
 
 interface Point { x: number; y: number }
+interface SandCamera { id: string; name: string; url: string }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
+const WORLD_WIDTH = 2200;
+const WORLD_HEIGHT = 1600;
 
 async function ipmRequest(path: string, options: RequestInit = {}) {
   const url = `${API_BASE}${path}`;
@@ -46,14 +50,19 @@ export default function IPMCalibration() {
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [currentVehicles, setCurrentVehicles] = useState<any[]>([]);
   const [transformedVehicles, setTransformedVehicles] = useState<any[]>([]);
+  const [sandCameras, setSandCameras] = useState<SandCamera[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState('default');
   const vehicleDotsRef = useRef<any[]>([]);
   vehicleDotsRef.current = transformedVehicles;
 
   const cameraCanvasRef = useRef<HTMLCanvasElement>(null);
   const worldCanvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<string | null>(null);
+  const selectedDeviceRef = useRef(selectedDeviceId);
+  selectedDeviceRef.current = selectedDeviceId;
+  const frameUrlsRef = useRef<Record<string, string>>({});
+  const payloadsRef = useRef<Record<string, any>>({});
   const wsRef = useRef<DashboardWebSocket | null>(null);
-  const blobUrlRef = useRef<string | null>(null);
   const camSizeRef = useRef({ w: 0, h: 0 });
 
   useEffect(() => { if (message) { const t = setTimeout(() => setMessage(null), 3000); return () => clearTimeout(t); } }, [message]);
@@ -104,29 +113,56 @@ export default function IPMCalibration() {
 
   const selectLane = (lid: string) => { setLaneId(lid); };
 
+  useEffect(() => {
+    const loadSandCameras = async () => {
+      try {
+        const res = await streamAPI.cameras();
+        if (res.code === 200 && Array.isArray(res.data)) setSandCameras(res.data);
+      } catch {}
+    };
+    loadSandCameras();
+  }, []);
+
+  const selectDevice = (deviceId: string) => {
+    setSelectedDeviceId(deviceId);
+    frameRef.current = frameUrlsRef.current[deviceId] || null;
+    setHasFrame(Boolean(frameRef.current));
+    const payload = payloadsRef.current[deviceId];
+    setCurrentVehicles(payload?.vehicles || []);
+    const rtspCameraId = deviceId.startsWith('rtsp_') ? deviceId.slice(5) : deviceId;
+    setCameraId(rtspCameraId);
+  };
+
   // WebSocket for camera feed
   useEffect(() => {
-    const onImage = (blob: Blob) => {
+    const onImage = (blob: Blob, meta: FrameMeta) => {
+      const deviceId = meta.deviceId || 'default';
       const url = URL.createObjectURL(blob);
-      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
-      blobUrlRef.current = url;
-      frameRef.current = url;
-      if (!hasFrame) setHasFrame(true);
+      const previous = frameUrlsRef.current[deviceId];
+      if (previous) URL.revokeObjectURL(previous);
+      frameUrlsRef.current[deviceId] = url;
+      if (selectedDeviceRef.current === deviceId) {
+        frameRef.current = url;
+        setHasFrame(true);
+      }
     };
     const onMessage = (data: any) => {
-      if (data.image) {
-        if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
-        frameRef.current = data.image;
-        if (!hasFrame) setHasFrame(true);
+      const deviceId = data.device_id || 'default';
+      payloadsRef.current[deviceId] = data;
+      if (selectedDeviceRef.current === deviceId && data.vehicles) {
+        setCurrentVehicles(data.vehicles);
       }
-      if (data.vehicles) setCurrentVehicles(data.vehicles);
     };
     const onStatus = (s: any) => setWsStatus(s);
     wsRef.current = new DashboardWebSocket(onMessage, onImage, onStatus);
     wsRef.current.connect();
-    return () => { wsRef.current?.stop(); if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current); };
+    return () => {
+      wsRef.current?.stop();
+      for (const url of Object.values(frameUrlsRef.current)) {
+        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+      }
+    };
   }, []);
-
   // Render camera feed canvas
   useEffect(() => {
     const canvas = cameraCanvasRef.current;
@@ -190,12 +226,12 @@ export default function IPMCalibration() {
       for (let y = 0; y < ch; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cw, y); ctx.stroke(); }
 
       // Calibration points (green)
-      drawPoints(ctx, worldPtsRef.current, 0, 0, cw, ch, 800, 600);
+      drawPoints(ctx, worldPtsRef.current, 0, 0, cw, ch, WORLD_WIDTH, WORLD_HEIGHT);
       // Transformed vehicle dots (red)
       for (const v of vehicleDotsRef.current) {
         if (!v.world) continue;
-        const px = v.world[0] / 800 * cw;
-        const py = v.world[1] / 600 * ch;
+        const px = v.world[0];
+        const py = v.world[1];
         ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(239, 68, 68, 0.8)'; ctx.fill();
         ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
@@ -336,6 +372,33 @@ export default function IPMCalibration() {
         </div>
       )}
 
+      {sandCameras.length > 0 && (
+        <div className="glass-panel rounded-3xl p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400 mr-2">沙盘摄像头</span>
+            <button
+              type="button"
+              onClick={() => selectDevice('default')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${selectedDeviceId === 'default' ? 'bg-blue-500/20 text-blue-300 border-blue-500/40' : 'bg-slate-900/50 text-slate-400 border-white/10 hover:text-slate-200'}`}
+            >
+              默认推流
+            </button>
+            {sandCameras.map(camera => {
+              const deviceId = `rtsp_${camera.id}`;
+              return (
+                <button
+                  key={camera.id}
+                  type="button"
+                  onClick={() => selectDevice(deviceId)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${selectedDeviceId === deviceId ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-slate-900/50 text-slate-400 border-white/10 hover:text-slate-200'}`}
+                >
+                  {camera.id} {camera.name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {/* Camera ID + Lane ID */}
       <div className="space-y-3">
         <div className="flex flex-wrap items-end gap-4">
@@ -418,14 +481,14 @@ export default function IPMCalibration() {
         {/* World panel */}
         <div className="glass-panel rounded-3xl p-5">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold text-slate-200">俯视图（白板）</h3>
+            <h3 className="font-semibold text-slate-200 flex items-center gap-2"><Move size={16} className="text-blue-400" /> 俯视图（白板）</h3>
             <div className="flex items-center gap-3">
               <span className="text-xs text-slate-400">{worldPoints.length}/4 点</span>
               <button onClick={() => setWorldPoints([])} className="text-xs text-slate-500 hover:text-rose-400 transition-colors">清除</button>
             </div>
           </div>
-          <div className="relative aspect-video rounded-xl overflow-hidden bg-slate-800 border border-slate-700">
-            <canvas ref={worldCanvasRef} onClick={handleWorldClick} className="w-full h-full block" style={{ cursor: worldPoints.length < 4 ? 'crosshair' : 'default' }} />
+          <div className="relative h-[560px] rounded-xl overflow-auto bg-slate-950 border border-slate-700">
+            <canvas ref={worldCanvasRef} onClick={handleWorldClick} className="block" style={{ width: `${WORLD_WIDTH}px`, height: `${WORLD_HEIGHT}px`, cursor: worldPoints.length < 4 ? 'crosshair' : 'grab' }} />
           </div>
         </div>
       </div>
