@@ -48,7 +48,7 @@ export default function Dashboard() {
   const [plateOcrEnabled, setPlateOcrEnabled] = useState(false);
   const [sandCameras, setSandCameras] = useState<SandCamera[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('default');
-  const [deviceTick, setDeviceTick] = useState(0);
+  const [activeRtspDevices, setActiveRtspDevices] = useState<string[]>([]);
   const [videoAspectRatio, setVideoAspectRatio] = useState('16 / 9');
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -171,6 +171,10 @@ export default function Dashboard() {
     loadSandCameras();
   }, []);
 
+  const activeSandCameras = sandCameras.filter(camera => activeRtspDevices.includes(`rtsp_${camera.id}`));
+
+  const normalizeDeviceId = (deviceId?: string) => deviceId?.startsWith('rtsp_') ? deviceId : 'default';
+
   const applyPayload = (data: any) => {
     if (data.fps !== undefined) setFps(data.fps);
     if (data.congestion_level) setCongestion(data.congestion_level);
@@ -203,31 +207,91 @@ export default function Dashboard() {
     if (payload) applyPayload(payload);
   };
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncRtspStatus = async () => {
+      try {
+        const res = await streamAPI.status();
+        if (cancelled || res.code !== 200 || !res.data) return;
+
+        const activeIds = Object.entries(res.data)
+          .filter(([deviceId, info]: [string, any]) => deviceId.startsWith('rtsp_') && info?.active)
+          .map(([deviceId]) => deviceId);
+        const activeSet = new Set(activeIds);
+
+        for (const [deviceId, url] of Object.entries(frameUrlsRef.current)) {
+          if (deviceId.startsWith('rtsp_') && !activeSet.has(deviceId)) {
+            if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url);
+            delete frameUrlsRef.current[deviceId];
+          }
+        }
+        for (const deviceId of Object.keys(payloadsRef.current)) {
+          if (deviceId.startsWith('rtsp_') && !activeSet.has(deviceId)) delete payloadsRef.current[deviceId];
+        }
+
+        setActiveRtspDevices(activeIds);
+
+        if (selectedDeviceRef.current.startsWith('rtsp_') && !activeSet.has(selectedDeviceRef.current)) {
+          const fallback = activeIds[0] || 'default';
+          selectedDeviceRef.current = fallback;
+          setSelectedDeviceId(fallback);
+          latestFrameRef.current = frameUrlsRef.current[fallback] || null;
+          setHasFrame(Boolean(latestFrameRef.current));
+          const payload = payloadsRef.current[fallback];
+          if (payload) applyPayload(payload);
+        }
+      } catch {}
+    };
+
+    syncRtspStatus();
+    const timer = window.setInterval(syncRtspStatus, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   // Connect WebSocket
   useEffect(() => {
     const onImage = (blob: Blob, meta: FrameMeta) => {
-      const deviceId = meta.deviceId || 'default';
+      const deviceId = normalizeDeviceId(meta.deviceId);
       const url = URL.createObjectURL(blob);
       const previous = frameUrlsRef.current[deviceId];
       if (previous) URL.revokeObjectURL(previous);
       frameUrlsRef.current[deviceId] = url;
+      if (deviceId.startsWith('rtsp_')) {
+        setActiveRtspDevices(prev => prev.includes(deviceId) ? prev : [...prev, deviceId]);
+        if (selectedDeviceRef.current === 'default' && !frameUrlsRef.current.default) {
+          selectedDeviceRef.current = deviceId;
+          setSelectedDeviceId(deviceId);
+          latestFrameRef.current = url;
+          setHasFrame(true);
+        }
+      }
       if (selectedDeviceRef.current === deviceId) {
         latestFrameRef.current = url;
         setHasFrame(true);
       }
-      setDeviceTick(t => t + 1);
     };
 
     const onMessage = (data: any) => {
-      const deviceId = data.device_id || 'default';
+      const deviceId = normalizeDeviceId(data.device_id);
       if (data.image) {
         latestFrameRef.current = data.image;
         frameUrlsRef.current[deviceId] = data.image;
         if (selectedDeviceRef.current === deviceId) setHasFrame(true);
       }
       payloadsRef.current[deviceId] = data;
+      if (deviceId.startsWith('rtsp_')) {
+        setActiveRtspDevices(prev => prev.includes(deviceId) ? prev : [...prev, deviceId]);
+        if (selectedDeviceRef.current === 'default' && !frameUrlsRef.current.default) {
+          selectedDeviceRef.current = deviceId;
+          setSelectedDeviceId(deviceId);
+          applyPayload(data);
+        }
+      }
       if (selectedDeviceRef.current === deviceId) applyPayload(data);
-      setDeviceTick(t => t + 1);
     };
 
     const onStatus = (status: any) => {
@@ -604,7 +668,7 @@ export default function Dashboard() {
             </div>
           </div>
           
-          {sandCameras.length > 0 && (
+          {activeSandCameras.length > 0 && (
             <div className="mb-4 flex flex-wrap items-center gap-2">
               <button
                 type="button"
@@ -613,7 +677,7 @@ export default function Dashboard() {
               >
                 边端默认
               </button>
-              {sandCameras.map(camera => {
+              {activeSandCameras.map(camera => {
                 const deviceId = `rtsp_${camera.id}`;
                 const active = Boolean(frameUrlsRef.current[deviceId] || payloadsRef.current[deviceId]);
                 return (
@@ -627,7 +691,7 @@ export default function Dashboard() {
                   </button>
                 );
               })}
-              <span className="text-xs text-slate-500">{deviceTick >= 0 ? '点击切换沙盘画面' : ''}</span>
+              <span className="text-xs text-slate-500">只显示边端正在推流的沙盘摄像头</span>
             </div>
           )}
           <div className="relative rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 flex justify-center items-center min-h-[360px]" onClick={handleCanvasClick} style={{ cursor: isDrawing ? 'crosshair' : 'default', aspectRatio: videoAspectRatio }}>

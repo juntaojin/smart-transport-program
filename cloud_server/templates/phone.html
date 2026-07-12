@@ -263,26 +263,27 @@
 
         <div id="rtsp-controls" style="display:none;">
             <div class="config-row">
-                <label for="rtsp-camera-select">沙盘摄像头</label>
-                <select id="rtsp-camera-select">
-                    <option value="live1">live1 - 桥面</option>
-                    <option value="live2">live2 - 停车场出口</option>
-                    <option value="live3">live3 - 行人检测</option>
-                    <option value="live4">live4 - 消防车识别</option>
-                    <option value="live5">live5 - 桥出口</option>
-                    <option value="live6">live6 - 桥入口</option>
-                    <option value="live7">live7 - 道路2</option>
-                    <option value="live8">live8 - 隧道(事故识别)</option>
-                    <option value="live9">live9 - 隧道(车辆数量)</option>
-                    <option value="live10">live10 - 道路3</option>
-                    <option value="live11">live11 - 停车场入口</option>
-                    <option value="live12">live12 - 道路1</option>
-                </select>
+                <label>沙盘摄像头</label>
+                <button type="button" id="rtsp-toggle-all" style="width:auto; padding:8px 12px; margin-bottom:8px;">&#20840;&#36873;</button>
+                <div id="rtsp-camera-list" style="display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; width:100%;">
+                    <label><input type="checkbox" class="rtsp-camera-check" value="live1"> live1 - 桥面</label>
+                    <label><input type="checkbox" class="rtsp-camera-check" value="live2"> live2 - 停车场出口</label>
+                    <label><input type="checkbox" class="rtsp-camera-check" value="live3"> live3 - 行人检测</label>
+                    <label><input type="checkbox" class="rtsp-camera-check" value="live4"> live4 - 消防车识别</label>
+                    <label><input type="checkbox" class="rtsp-camera-check" value="live5"> live5 - 桥出口</label>
+                    <label><input type="checkbox" class="rtsp-camera-check" value="live6"> live6 - 桥入口</label>
+                    <label><input type="checkbox" class="rtsp-camera-check" value="live7"> live7 - 道路2</label>
+                    <label><input type="checkbox" class="rtsp-camera-check" value="live8"> live8 - 隧道(事故识别)</label>
+                    <label><input type="checkbox" class="rtsp-camera-check" value="live9"> live9 - 隧道(车辆数量)</label>
+                    <label><input type="checkbox" class="rtsp-camera-check" value="live10"> live10 - 道路3</label>
+                    <label><input type="checkbox" class="rtsp-camera-check" value="live11"> live11 - 停车场入口</label>
+                    <label><input type="checkbox" class="rtsp-camera-check" value="live12"> live12 - 道路1</label>
+                </div>
             </div>
             <div class="hint">沙盘摄像头由云端服务器直接拉取RTSP流，无需手机摄像头</div>
             <div class="config-row">
                 <label for="rtsp-max-streams">同时推流数量</label>
-                <input id="rtsp-max-streams" type="number" min="1" max="12" value="12" style="width: 90px;">
+                <input id="rtsp-max-streams" type="number" min="0" max="12" value="0" readonly style="width: 90px;">
             </div>
             <div class="hint">沙盘模式会从 live1 开始批量拉取，最多 12 路；如果画面卡顿请降低数量。</div>
         </div>
@@ -319,8 +320,9 @@
         const cameraControls = document.getElementById('camera-controls');
         const videoFileControls = document.getElementById('video-file-controls');
         const rtspControls = document.getElementById('rtsp-controls');
-        const rtspCameraSelect = document.getElementById('rtsp-camera-select');
+        const rtspCameraChecks = () => Array.from(document.querySelectorAll('.rtsp-camera-check'));
         const rtspMaxStreams = document.getElementById('rtsp-max-streams');
+        const rtspToggleAll = document.getElementById('rtsp-toggle-all');
 
         let ws = null;
         let stream = null;
@@ -332,6 +334,15 @@
         let hasPermission = false;
         let sourceMode = 'camera';
         let videoFileLoaded = false;
+
+        function updateRtspSelectionState() {
+            const checks = rtspCameraChecks();
+            const selectedCount = checks.filter(c => c.checked).length;
+            rtspMaxStreams.value = String(selectedCount);
+            if (rtspToggleAll) {
+                rtspToggleAll.textContent = checks.length > 0 && selectedCount === checks.length ? '\u5168\u90e8\u53d6\u6d88' : '\u5168\u9009';
+            }
+        }
 
         function switchMode(mode) {
             sourceMode = mode;
@@ -703,7 +714,8 @@
         }
 
         async function startRtspStream() {
-            const cameraId = rtspCameraSelect.value;
+            const selectedCameraIds = rtspCameraChecks().filter(c => c.checked).map(c => c.value);
+            if (selectedCameraIds.length === 0) { showWarn('请至少选择一个沙盘摄像头'); return; }
             const apiBase = getApiBase();
             if (!apiBase) { showWarn('请输入服务器地址'); return; }
 
@@ -714,7 +726,7 @@
                 const resp = await fetch(`${apiBase}/api/stream/rtsp/start`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ start_all: true, max_streams: Math.max(1, Math.min(12, parseInt(rtspMaxStreams.value || '12', 10))) })
+                    body: JSON.stringify({ camera_ids: selectedCameraIds, max_streams: selectedCameraIds.length })
                 });
                 const result = await resp.json();
                 if (result.code === 200) {
@@ -726,10 +738,11 @@
                     btnPickVideo.style.display = 'none';
                     serverAddr.disabled = true;
                     deviceIdInput.disabled = true;
-                    rtspCameraSelect.disabled = true;
+                    rtspCameraChecks().forEach(c => c.disabled = true);
                     rtspMaxStreams.disabled = true;
+                    if (rtspToggleAll) rtspToggleAll.disabled = true;
                     document.querySelectorAll('.mode-tab').forEach(t => t.style.pointerEvents = 'none');
-                    infoRes.textContent = 'sand table ' + (result.data?.max_streams || rtspMaxStreams.value) + ' streams';
+                    infoRes.textContent = 'sand table ' + (result.data?.started?.length || result.data?.selected?.length || selectedCameraIds.length) + ' streams';
                     infoSent.textContent = 'RTSP';
                     fpsDisplay.textContent = '服务器拉流';
                 } else if (result.code === 409) {
@@ -746,7 +759,6 @@
         }
 
         async function stopRtspStream() {
-            const cameraId = rtspCameraSelect.value;
             const apiBase = getApiBase();
             if (apiBase) {
                 try {
@@ -767,8 +779,9 @@
             btnStop.style.display = 'none';
             serverAddr.disabled = false;
             deviceIdInput.disabled = false;
-            rtspCameraSelect.disabled = false;
+            rtspCameraChecks().forEach(c => c.disabled = false);
             rtspMaxStreams.disabled = false;
+            if (rtspToggleAll) rtspToggleAll.disabled = false;
             document.querySelectorAll('.mode-tab').forEach(t => t.style.pointerEvents = '');
             infoRes.textContent = '-';
             infoSent.textContent = '0';
@@ -782,6 +795,17 @@
             if (!serverAddr.value.trim()) { showWarn('请输入服务器地址'); return; }
             connectWS();
         });
+
+        rtspCameraChecks().forEach(c => c.addEventListener('change', updateRtspSelectionState));
+        if (rtspToggleAll) {
+            rtspToggleAll.addEventListener('click', () => {
+                const checks = rtspCameraChecks();
+                const allSelected = checks.length > 0 && checks.every(c => c.checked);
+                checks.forEach(c => { c.checked = !allSelected; });
+                updateRtspSelectionState();
+            });
+        }
+        updateRtspSelectionState();
 
         btnStop.addEventListener('click', () => {
             if (sourceMode === 'rtsp') { stopRtspStream(); return; }
