@@ -27,10 +27,10 @@ defaults = {
             "anomaly_bank_frames": 5,
             "anomaly_alert_frames": 2,
             "anomaly_max_age": 6,
-            "anomaly_min_area": 160,
+            "anomaly_min_area": 900,
             "anomaly_diff_thresh": 26,
             "anomaly_min_extent": 0.18,
-            "anomaly_min_box_size": 8,
+            "anomaly_min_box_size": 24,
             "anomaly_stabilization_enabled": True,
             "anomaly_max_jitter_px": 20,
             "anomaly_alert_seconds": 0.8,
@@ -45,7 +45,7 @@ defaults = {
             ]
         },
         "thresholds": {
-            "parking_duration_limit": 10.0,
+            "parking_duration_limit": 5.0,
             "congestion_high": 8,
             "congestion_medium": 5,
             "congestion_low": 3,
@@ -118,10 +118,10 @@ ANOMALY_DEVICE = c_server["models"].get("anomaly_device", "auto")
 ANOMALY_BANK_FRAMES = c_server["models"].get("anomaly_bank_frames", 5)
 ANOMALY_ALERT_FRAMES = c_server["models"].get("anomaly_alert_frames", 2)
 ANOMALY_MAX_AGE = c_server["models"].get("anomaly_max_age", 6)
-ANOMALY_MIN_AREA = c_server["models"].get("anomaly_min_area", 160)
+ANOMALY_MIN_AREA = c_server["models"].get("anomaly_min_area", 900)
 ANOMALY_DIFF_THRESH = c_server["models"].get("anomaly_diff_thresh", 26)
 ANOMALY_MIN_EXTENT = c_server["models"].get("anomaly_min_extent", 0.18)
-ANOMALY_MIN_BOX_SIZE = c_server["models"].get("anomaly_min_box_size", 8)
+ANOMALY_MIN_BOX_SIZE = c_server["models"].get("anomaly_min_box_size", 24)
 ANOMALY_STABILIZATION_ENABLED = c_server["models"].get("anomaly_stabilization_enabled", True)
 ANOMALY_MAX_JITTER_PX = c_server["models"].get("anomaly_max_jitter_px", 20)
 ANOMALY_ALERT_SECONDS = c_server["models"].get("anomaly_alert_seconds", 0.8)

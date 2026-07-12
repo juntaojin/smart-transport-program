@@ -78,7 +78,7 @@ export default function SystemConfig() {
         hardware: '深度学习大模型 (显存占比大)'
       },
       violation_detection: {
-        title: '禁停区违停研判',
+        title: '禁停区超时研判',
         desc: '根据持续追踪 ID 判断车辆在禁停区内的停留时间。开启时会自动启用车辆识别与追踪。',
         hardware: '规则引擎 · 依赖车辆识别'
       }

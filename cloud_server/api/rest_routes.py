@@ -12,7 +12,8 @@ from cloud_server.database.connection import get_db
 from cloud_server.database.orm_models import (
     PlateRecord, VehicleStat, ParkingViolation, RoadAnomaly, SystemMetric, ModelConfig
 )
-from cloud_server.config import BASE_DIR, DATA_DIR, NO_PARKING_ZONES
+from cloud_server.config import BASE_DIR, DATA_DIR
+from model_api import reset_anomaly_state
 
 router = APIRouter(prefix="/api")
 
@@ -206,6 +207,14 @@ async def get_system_stats(
     }
 
 
+
+@router.post("/anomaly/reset")
+async def reset_anomaly_detector(payload: dict | None = None):
+    """Reset anomaly background/warmup state for one device, or all devices."""
+    device_id = (payload or {}).get("device_id")
+    reset_anomaly_state(device_id)
+    logger.info(f"[AnomalyDetection] Reset state requested for device={device_id or 'ALL'}")
+    return {"code": 200, "message": "success", "data": {"device_id": device_id}}
 # --- 3. Configuration Management APIs ---
 
 @router.get("/configs/models")
@@ -250,9 +259,9 @@ async def update_model_configs(payload: dict, request: Request):
 @router.get("/configs/zones")
 async def get_zones_config(request: Request):
     """Get configured no parking zones"""
-    from cloud_server.config import NO_PARKING_ZONES
+    import cloud_server.config as server_config
     zones = []
-    for z in NO_PARKING_ZONES:
+    for z in server_config.NO_PARKING_ZONES:
         zones.append({
             "name": z["name"],
             "points": [list(pt) for pt in z["points"]],
@@ -279,7 +288,13 @@ async def update_zones_config(payload: list = Body(...), request: Request = None
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             yaml.safe_dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
-        logger.info(f"Updated no-parking zones: {len(zones_data)} zones written to config.yaml")
+        import cloud_server.config as server_config
+        server_config.NO_PARKING_ZONES = [
+            {"name": zone["name"], "points": [tuple(pt) for pt in zone["points"]]}
+            for zone in zones_data
+        ]
+
+        logger.info(f"Updated no-parking zones: {len(zones_data)} zones written to config.yaml and memory")
         return {"code": 200, "message": "success", "data": zones_data}
     except Exception as e:
         logger.error(f"Failed to update zones: {e}")
@@ -414,6 +429,7 @@ async def start_rtsp_stream(payload: dict, request: Request):
         already_active = []
         for camera in selected_cameras:
             device_id = f"rtsp_{camera['id']}"
+            reset_anomaly_state(device_id)
             success = rtsp_manager.start_stream(device_id, camera["url"], camera["id"], camera["name"])
             item = {"camera_id": camera["id"], "name": camera["name"], "device_id": device_id}
             if success:
@@ -440,6 +456,7 @@ async def start_rtsp_stream(payload: dict, request: Request):
         raise HTTPException(status_code=404, detail=f"Camera '{camera_id}' not found")
 
     device_id = f"rtsp_{camera_id}"
+    reset_anomaly_state(device_id)
     success = rtsp_manager.start_stream(device_id, camera["url"], camera["id"], camera["name"])
     if not success:
         return {"code": 409, "message": "Stream already active", "data": {"camera_id": camera_id}}
@@ -459,11 +476,13 @@ async def stop_rtsp_stream(payload: dict, request: Request):
         stopped = []
         for camera in SAND_TABLE_CAMERAS:
             device_id = f"rtsp_{camera['id']}"
+            reset_anomaly_state(device_id)
             if rtsp_manager.stop_stream(device_id):
                 stopped.append(camera["id"])
         return {"code": 200, "message": "success", "data": {"stopped": stopped}}
 
     device_id = f"rtsp_{camera_id}"
+    reset_anomaly_state(device_id)
     success = rtsp_manager.stop_stream(device_id)
     if not success:
         return {"code": 404, "message": "No active stream for this camera", "data": None}

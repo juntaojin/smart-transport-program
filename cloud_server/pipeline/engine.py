@@ -41,8 +41,8 @@ class PipelineNode:
 
 class InferencePipeline:
     # Lightweight frames keep stateful real-time nodes current. Expensive OCR and
-    # violation analysis only run on full frames (currently one out of every 15).
-    TRACK_ONLY_NODES = {"vehicle_detection", "tracking", "transform", "anomaly_detection"}
+    # OCR only runs on full frames, while stateful tracking/timeout nodes stay current on lightweight frames.
+    TRACK_ONLY_NODES = {"vehicle_detection", "tracking", "transform", "anomaly_detection", "violation_detection"}
     USER_CAPABILITIES = (
         "vehicle_detection",
         "plate_ocr",

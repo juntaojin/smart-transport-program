@@ -84,3 +84,11 @@ export const streamAPI = {
     body: JSON.stringify({ camera_id: cameraId }),
   }),
 };
+
+// Anomaly detector controls
+export const anomalyAPI = {
+  reset: (deviceId?: string) => request('/anomaly/reset', {
+    method: 'POST',
+    body: JSON.stringify(deviceId ? { device_id: deviceId } : {}),
+  }),
+};

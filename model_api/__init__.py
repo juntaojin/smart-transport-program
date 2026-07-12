@@ -8,4 +8,4 @@ from .detect_anomalies import (                  # 双路背景建模 + YOLO排�
     reset_anomaly_state,
     unload_anomaly_model,
 )
-from .detect_violations import detect_violations  # 有状态违停判断: 归一化坐标 + 射线法 + 超时告警
+from .detect_violations import detect_violations  # 有状态超时判断: 归一化坐标 + 射线法 + 超时告警

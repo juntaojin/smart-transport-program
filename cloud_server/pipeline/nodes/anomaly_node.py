@@ -123,7 +123,15 @@ class AnomalyDetectionNode(PipelineNode):
         except (TypeError, ValueError):
             return None
 
+        width = max(0.0, normalized_box[2] - normalized_box[0])
+        height = max(0.0, normalized_box[3] - normalized_box[1])
+        area = width * height
+
         if confidence < ANOMALY_THRESHOLD:
+            return None
+        if area < ANOMALY_MIN_AREA:
+            return None
+        if width < ANOMALY_MIN_BOX_SIZE or height < ANOMALY_MIN_BOX_SIZE:
             return None
 
         return {
