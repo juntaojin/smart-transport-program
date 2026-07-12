@@ -1,7 +1,7 @@
 from loguru import logger
 from cloud_server.pipeline.engine import PipelineNode
 from cloud_server.pipeline.context import FrameContext
-from cloud_server.config import NO_PARKING_ZONES, PARKING_THRESHOLD
+import cloud_server.config as server_config
 from model_api import detect_violations
 
 
@@ -35,7 +35,8 @@ class ViolationDetectionNode(PipelineNode):
             })
 
         zones_payload = []
-        for zone in NO_PARKING_ZONES:
+        parking_threshold = server_config.PARKING_THRESHOLD
+        for zone in server_config.NO_PARKING_ZONES:
             zones_payload.append({
                 "name": zone["name"],
                 "points": [list(pt) for pt in zone["points"]],
@@ -46,7 +47,7 @@ class ViolationDetectionNode(PipelineNode):
                 vehicles=vehicles_payload,
                 no_parking_zones=zones_payload,
                 timestamp=context.timestamp,
-                parking_threshold=PARKING_THRESHOLD,
+                parking_threshold=parking_threshold,
                 image_width=w_img,
                 image_height=h_img,
                 device_id=context.device_id,
@@ -61,11 +62,16 @@ class ViolationDetectionNode(PipelineNode):
             return context
 
         if self._frame_count <= 5 or self._frame_count % 30 == 0:
-            logger.info(f"[ViolationDetection] Frame #{self._frame_count}: {len(violations)} violations")
+            logger.info(
+                f"[ViolationDetection] Frame #{self._frame_count}: "
+                f"vehicles={len(vehicles_payload)}, track_ids={len(track_ids)}, "
+                f"zones={len(zones_payload)}, threshold={parking_threshold:.1f}s, "
+                f"timeouts={len(violations)}"
+            )
 
         for v in violations:
-            if "duration" in v and v["duration"] > PARKING_THRESHOLD:
-                logger.warning(f"VIOLATION ALERT: Vehicle {v['vehicle_id']} parked in '{v['zone_name']}' for {v['duration']:.1f}s")
+            if "duration" in v and v["duration"] > parking_threshold:
+                logger.warning(f"TIMEOUT ALERT: Vehicle {v['vehicle_id']} stayed in '{v['zone_name']}' for {v['duration']:.1f}s")
 
         context.properties["violations"] = violations
         return context

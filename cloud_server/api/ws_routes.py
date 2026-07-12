@@ -9,6 +9,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_server.pipeline.context import FrameContext
+from model_api import reset_anomaly_state
 from cloud_server.database.connection import async_session
 from cloud_server.database.orm_models import (
     PlateRecord, VehicleStat, ParkingViolation, RoadAnomaly, SystemMetric
@@ -257,6 +258,7 @@ async def receive_stream(websocket: WebSocket, device_id: str):
     """Receive edge JPEGs without coupling video delivery to AI latency."""
     await websocket.accept()
     logger.info(f"Edge streaming device connected: {device_id}")
+    reset_anomaly_state(device_id)
     active_devices[device_id] = time.time()
 
     pipeline = websocket.app.state.pipeline

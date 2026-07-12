@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { DashboardWebSocket, type FrameMeta } from '../services/ws';
-import { streamAPI } from '../services/api';
+import { streamAPI, anomalyAPI } from '../services/api';
 import { MapPin, Trash2, Check, RefreshCw, Crosshair, Move } from 'lucide-react';
 import roadModelV5 from '../assets/roadModelV5';
 
@@ -120,6 +120,7 @@ export default function IPMCalibration() {
   const normalizeDeviceId = (deviceId?: string) => deviceId?.startsWith('rtsp_') ? deviceId : 'default';
 
   const selectDevice = (deviceId: string) => {
+    if (deviceId.startsWith("rtsp_")) anomalyAPI.reset(deviceId).catch(() => {});
     setSelectedDeviceId(deviceId);
     frameRef.current = frameUrlsRef.current[deviceId] || null;
     setHasFrame(Boolean(frameRef.current));

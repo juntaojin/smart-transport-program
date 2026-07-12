@@ -1,91 +1,88 @@
-# 智能交通系统 - 全局统一配置文件 (config.yaml)
-
-# ==========================================
-# 0. 局域网云端服务器 IP 地址 (连接 Windows 本端后端服务)
-# ==========================================
-server_ip: "100.117.93.85"
-
-# ==========================================
-# 1. 云端后台服务器配置 (FastAPI)
-# ==========================================
+server_ip: 100.117.93.85
 cloud_server:
-  host: "0.0.0.0"
+  host: 0.0.0.0
   port: 8000
-  # 是否启用 HTTPS/WSS 加密连接 (手机外部摄像头推流必须开启 HTTPS 授权)
   enable_ssl: true
-  
   database:
-    # 数据库路径 (相对于项目根目录)
-    path: "data/its.db"
-    
+    path: data/its.db
   video:
-    # 接收视频帧的分辨率与帧率
     width: 1280
     height: 720
     fps: 15
-    # JPEG 编码质量 (1-100, 越低编码越快但画质越差, 默认 80)
     jpeg_quality: 95
-    # RTSP 转 WebSocket MJPEG 的 FFmpeg 质量等级 (2-31，越小画质越高、带宽越大)
-    # 5 在 720p 下通常能兼顾车牌清晰度与实时性
     rtsp_mjpeg_qscale: 5
-    # 帧率控制 (可自行调整)
-    capture_fps: 24             # 边端摄像头/手机推流采集帧率
-    stream_broadcast_fps: 24    # WebSocket 推流广播帧率
-    rtsp_broadcast_fps: 30      # RTSP 拉流广播帧率
-    
+    capture_fps: 24
+    stream_broadcast_fps: 24
+    rtsp_broadcast_fps: 30
   models:
-    # YOLO 目标检测模型路径 (如果不存在会自动下载)
-    yolo_model_path: "models/yolo26s.pt"
-    # YOLO 目标检测默认置信度阈值
+    yolo_model_path: models/yolo26s.pt
     yolo_confidence: 0.25
-    # YOLO NMS IoU 阈值
     yolo_iou: 0.45
-    # YOLO 推理分辨率
     yolo_imgsz: 640
-    # Grounding DINO 零样本异常检测阈值
     anomaly_threshold: 0.25
     anomaly_model_path: models/yolo26s.pt
     anomaly_device: auto
     anomaly_bank_frames: 5
     anomaly_alert_frames: 2
     anomaly_max_age: 6
-    anomaly_min_area: 160
+    anomaly_min_area: 900
     anomaly_diff_thresh: 26
     anomaly_min_extent: 0.18
-    anomaly_min_box_size: 8
+    anomaly_min_box_size: 24
     anomaly_stabilization_enabled: true
     anomaly_max_jitter_px: 20
     anomaly_alert_seconds: 0.8
     anomaly_max_missing_seconds: 0.5
     anomaly_static_edge_suppression_px: 3
     anomaly_vehicle_mask_padding: 8
-
   zones:
-    # 禁停多边形区域配置 (点坐标为归一化比例 [0.0, 1.0])
     no_parking:
-      - name: "主路禁停区"
-        points:
-          - [0.1, 0.1]
-          - [0.3, 0.1]
-          - [0.3, 0.4]
-          - [0.1, 0.4]
-      - name: "路口禁停区"
-        points:
-          - [0.6, 0.5]
-          - [0.9, 0.5]
-          - [0.9, 0.9]
-          - [0.6, 0.9]
-          
+    - name: 禁停区
+      points:
+      - - 0.014
+        - 0.0182
+      - - 0.9829
+        - 0.0263
+      - - 0.9891
+        - 0.9694
+      - - 0.0125
+        - 0.9748
   thresholds:
-    # 判定违章停放的持续时间上限 (秒，超过触发报警)
-    parking_duration_limit: 10.0
-    # 拥堵指数阈值判定 (车辆数)
+    parking_duration_limit: 1.0
     congestion_high: 8
     congestion_medium: 5
     congestion_low: 3
-    # 边缘推流设备心跳超时离线阈值 (秒)
     device_timeout: 30
-    # 历史归档数据保留天数
     data_retention_days: 30
-    # 硬件指标与负载性能状态监控采集间隔 (秒)
     monitor_interval: 5
+ipm_service:
+  camera_01:
+    num1:
+      camera_points:
+      - - 614.0
+        - 96.0
+      - - 1157.0
+        - 102.0
+      - - 1553.0
+        - 1068.0
+      - - 146.0
+        - 1071.0
+      world_points:
+      - - 194.0
+        - 221.0
+      - - 259.0
+        - 221.0
+      - - 260.0
+        - 470.0
+      - - 195.0
+        - 470.0
+      homography_matrix:
+      - - 0.12986771
+        - 0.43563159
+        - 103.29562479
+      - - -0.01655977
+        - 1.18492563
+        - 152.56412524
+      - - -3.658e-05
+        - 0.00189068
+        - 1.0

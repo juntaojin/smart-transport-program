@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { DashboardWebSocket, type FrameMeta } from '../services/ws';
-import { statsAPI, configAPI, streamAPI } from '../services/api';
+import { statsAPI, configAPI, streamAPI, anomalyAPI } from '../services/api';
 import { Cpu, Database, Activity, HardDrive, Wifi, ShieldAlert, Car, Navigation, FileText, PenTool, Save, X, Trash2 } from 'lucide-react';
 
 interface Vehicle {
@@ -199,6 +199,7 @@ export default function Dashboard() {
   };
 
   const selectDevice = (deviceId: string) => {
+    if (deviceId.startsWith("rtsp_")) anomalyAPI.reset(deviceId).catch(() => {});
     setSelectedDeviceId(deviceId);
     const frameUrl = frameUrlsRef.current[deviceId];
     latestFrameRef.current = frameUrl || null;
@@ -628,7 +629,7 @@ export default function Dashboard() {
 
         <div className="glass-panel hover-scale rounded-2xl p-5 flex items-center justify-between">
           <div>
-            <p className="text-sm font-semibold text-slate-400 uppercase tracking-wider">违停车辆</p>
+            <p className="text-sm font-semibold text-slate-400 uppercase tracking-wider">超时车辆</p>
             <h3 className="text-3xl font-bold mt-1 text-rose-500">{activeViolationsCount} <span className="text-xs font-normal text-slate-400">起</span></h3>
           </div>
           <div className="p-3 bg-rose-500/10 rounded-xl text-rose-400">
@@ -975,21 +976,21 @@ export default function Dashboard() {
         <div className="glass-panel rounded-3xl p-6">
           <h3 className="font-semibold text-lg text-rose-500 mb-4 flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
-            当前区域违规停放告警 ({violations.length})
+            当前区域超时告警 ({violations.length})
           </h3>
           <div className="space-y-3 max-h-56 overflow-y-auto pr-2">
             {violations.length === 0 ? (
-              <p className="text-slate-500 text-sm py-4 text-center">当前没有正在违规停放的车辆</p>
+              <p className="text-slate-500 text-sm py-4 text-center">当前没有区域滞留超时车辆</p>
             ) : (
               violations.map((v, i) => (
                 <div key={i} className="flex justify-between items-center bg-rose-500/10 border border-rose-500/20 rounded-xl p-3.5">
                   <div>
-                    <span className="text-xs bg-rose-500 text-white font-semibold px-2 py-0.5 rounded mr-2">违停</span>
+                    <span className="text-xs bg-rose-500 text-white font-semibold px-2 py-0.5 rounded mr-2">超时</span>
                     <strong className="text-sm text-slate-200">车辆 ID: {v.vehicle_id}</strong>
                     <p className="text-xs text-slate-400 mt-1">所在区域: {v.zone_name}</p>
                   </div>
                   <div className="text-right">
-                    <span className="text-xs text-slate-400">停放时长</span>
+                    <span className="text-xs text-slate-400">停留时长</span>
                     <p className="text-sm font-bold text-rose-400">{v.duration.toFixed(1)} 秒</p>
                   </div>
                 </div>
