@@ -2,13 +2,13 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { DashboardWebSocket, type FrameMeta } from '../services/ws';
 import { streamAPI, anomalyAPI } from '../services/api';
 import { MapPin, Trash2, Check, RefreshCw, Crosshair, Move } from 'lucide-react';
-import roadModelV5 from '../assets/roadModelV5';
+import roadModelV8 from '../assets/roadModelV8';
 
 interface Point { x: number; y: number }
 interface SandCamera { id: string; name: string; url: string }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
-const ROAD_MODEL = roadModelV5;
+const ROAD_MODEL = roadModelV8;
 const WORLD_WIDTH = ROAD_MODEL.metadata.extent.width;
 const WORLD_HEIGHT = ROAD_MODEL.metadata.extent.height;
 const WORLD_DISPLAY_SCALE = 1.6;
@@ -278,6 +278,81 @@ export default function IPMCalibration() {
   const drawRoadModelBackground = (ctx: CanvasRenderingContext2D, cw: number, ch: number) => {
     const sx = cw / WORLD_WIDTH;
     const sy = ch / WORLD_HEIGHT;
+    const scale = Math.min(sx, sy);
+    const toCanvas = ([x, y]: [number, number]) => [x * sx, y * sy] as const;
+    const drawPolyline = (points: [number, number][]) => {
+      ctx.beginPath();
+      points.forEach((point, index) => {
+        const [px, py] = toCanvas(point);
+        if (index === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      });
+    };
+    const drawRoadArrow = (x: number, y: number, angle: number, size: number) => {
+      const px = x * sx;
+      const py = y * sy;
+      const arrowSize = size * scale;
+
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.rotate((angle * Math.PI) / 180);
+      ctx.beginPath();
+      ctx.moveTo(arrowSize, 0);
+      ctx.lineTo(-arrowSize * 0.72, -arrowSize * 0.52);
+      ctx.lineTo(-arrowSize * 0.32, 0);
+      ctx.lineTo(-arrowSize * 0.72, arrowSize * 0.52);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(248, 250, 252, 0.96)';
+      ctx.shadowColor = 'rgba(2, 6, 23, 0.65)';
+      ctx.shadowBlur = 4 * scale;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.lineWidth = Math.max(1, 1.4 * scale);
+      ctx.stroke();
+      ctx.restore();
+    };
+    const drawCrosswalk = (points: [number, number][], width: number, stripeCount: number) => {
+      if (points.length < 2) return;
+      const [a, b] = points;
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const length = Math.hypot(dx, dy);
+      if (!length) return;
+
+      const ux = dx / length;
+      const uy = dy / length;
+      const stripeWidth = width / Math.max(3, stripeCount);
+      const stripeLength = width * 0.72;
+      const nx = -uy;
+      const ny = ux;
+
+      ctx.save();
+      ctx.fillStyle = 'rgba(248, 250, 252, 0.92)';
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.38)';
+      ctx.lineWidth = Math.max(0.8, scale);
+      for (let i = 0; i < stripeCount; i++) {
+        const t = (i + 0.5) / stripeCount;
+        const cx = a[0] + dx * t;
+        const cy = a[1] + dy * t;
+        const halfW = stripeWidth * 0.35;
+        const halfL = stripeLength * 0.5;
+        const corners: [number, number][] = [
+          [cx - ux * halfW - nx * halfL, cy - uy * halfW - ny * halfL],
+          [cx + ux * halfW - nx * halfL, cy + uy * halfW - ny * halfL],
+          [cx + ux * halfW + nx * halfL, cy + uy * halfW + ny * halfL],
+          [cx - ux * halfW + nx * halfL, cy - uy * halfW + ny * halfL],
+        ];
+        ctx.beginPath();
+        corners.forEach((point, index) => {
+          const [px, py] = toCanvas(point);
+          if (index === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        });
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.restore();
+    };
 
     ctx.save();
     ctx.fillStyle = '#0f172a';
@@ -296,27 +371,47 @@ export default function IPMCalibration() {
       const points = road.centerline;
       if (!points || points.length < 2) continue;
 
-      ctx.beginPath();
-      points.forEach(([x, y], index) => {
-        const px = x * sx;
-        const py = y * sy;
-        if (index === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-      });
+      const roadWidth = Math.max(22, road.lanes * 18) * scale;
+      drawPolyline(points);
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.strokeStyle = 'rgba(2, 6, 23, 0.92)';
-      ctx.lineWidth = 18;
+      ctx.lineWidth = roadWidth + 7 * scale;
       ctx.stroke();
 
+      drawPolyline(points);
       ctx.strokeStyle = 'rgba(148, 163, 184, 0.88)';
-      ctx.lineWidth = 10;
+      ctx.lineWidth = roadWidth;
       ctx.stroke();
 
+      drawPolyline(points);
       ctx.strokeStyle = 'rgba(226, 232, 240, 0.30)';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([12, 12]);
+      ctx.lineWidth = Math.max(1.6, 2.2 * scale);
+      ctx.setLineDash([10 * scale, 14 * scale]);
       ctx.stroke();
       ctx.setLineDash([]);
+    }
+
+    for (const crosswalk of ROAD_MODEL.crosswalks) {
+      drawCrosswalk(crosswalk.points, crosswalk.width, crosswalk.stripe_count);
+    }
+
+    for (const marking of ROAD_MODEL.lane_markings) {
+      if (marking.points.length < 2) continue;
+      drawPolyline(marking.points);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = marking.style === 'solid'
+        ? 'rgba(250, 204, 21, 0.96)'
+        : 'rgba(248, 250, 252, 0.86)';
+      ctx.lineWidth = Math.max(2, 3 * scale);
+      ctx.setLineDash(marking.style === 'dashed' ? [16 * scale, 14 * scale] : []);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    for (const arrow of ROAD_MODEL.road_arrows) {
+      drawRoadArrow(arrow.x, arrow.y, arrow.angle, arrow.size);
     }
 
     for (const node of ROAD_MODEL.nodes) {
