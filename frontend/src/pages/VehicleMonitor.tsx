@@ -87,17 +87,17 @@ export default function VehicleMonitor() {
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       
       {/* 左侧：车牌识别记录列表 */}
-      <div className="lg:col-span-2 glass-panel rounded-3xl p-6 space-y-6">
+      <div className="lg:col-span-2 dashboard-card p-6 space-y-6">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
-            <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
+            <h2 className="text-xl font-bold text-[var(--color-text-primary)] flex items-center gap-2">
               车辆识别记录
-              {loading && <span className="w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin inline-block" />}
+              {loading && <span className="w-3.5 h-3.5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin inline-block" />}
             </h2>
-            <p className="text-slate-400 text-sm mt-0.5">历史自动车牌识别 (OCR) 记录归档</p>
+            <p className="text-[var(--color-text-secondary)] text-sm mt-0.5">历史自动车牌识别 (OCR) 记录归档</p>
           </div>
           <div className="relative w-full sm:w-64">
-            <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400 pointer-events-none">
+            <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-[var(--color-text-muted)] pointer-events-none">
               <Search size={16} />
             </span>
             <input 
@@ -105,7 +105,7 @@ export default function VehicleMonitor() {
               placeholder="搜索车牌号..." 
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              className="w-full bg-slate-900/60 border border-white/10 rounded-xl pl-9 pr-4 py-2 text-sm text-slate-200 outline-none focus:border-blue-500"
+              className="w-full bg-white/90 dark:bg-[#1C1C22]/90 border border-[var(--color-border-card)] rounded-xl pl-9 pr-4 py-2 text-sm text-[var(--color-text-primary)] outline-none focus:border-emerald-500 transition-colors"
             />
           </div>
         </div>
@@ -113,39 +113,39 @@ export default function VehicleMonitor() {
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="border-b border-white/5 text-slate-400 text-xs uppercase tracking-wider">
+              <tr className="border-b border-[var(--color-border-card)] text-[var(--color-text-secondary)] text-xs uppercase tracking-wider">
                 <th className="py-3 px-4 font-semibold">记录ID</th>
                 <th className="py-3 px-4 font-semibold">车牌号码</th>
                 <th className="py-3 px-4 font-semibold">白名单状态</th>
                 <th className="py-3 px-4 font-semibold">时间戳</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-white/5 text-sm">
+            <tbody className="divide-y divide-[#222328]/50 text-sm">
               {filteredRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="py-8 text-center text-slate-500">未找到相关车牌识别记录</td>
+                  <td colSpan={4} className="py-8 text-center text-[var(--color-text-muted)]">未找到相关车牌识别记录</td>
                 </tr>
               ) : (
                 filteredRecords.map((r, i) => (
-                  <tr key={i} className="hover:bg-white/5 transition-colors">
-                    <td className="py-3.5 px-4 font-semibold text-slate-400">#{r.id}</td>
+                  <tr key={i} className="hover:hover:bg-gray-100 dark:hover:bg-[#1C1E24]/40 transition-colors group">
+                    <td className="py-3.5 px-4 font-semibold text-[var(--color-text-muted)]">#{r.id}</td>
                     <td className="py-3.5 px-4">
-                      <span className="font-mono font-bold bg-slate-900/80 border border-white/10 rounded-lg px-2.5 py-1 text-blue-400">
+                      <span className="font-mono font-bold bg-gray-100 dark:bg-[#101114] border border-[var(--color-border-card)] rounded-lg px-2.5 py-1 text-emerald-400 group-hover:border-emerald-500/30 transition-colors">
                         {r.plate_number}
                       </span>
                     </td>
                     <td className="py-3.5 px-4">
                       {r.is_whitelisted ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-400 text-xs font-semibold bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
+                        <span className="inline-flex items-center gap-1 text-emerald-400 text-xs font-semibold bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
                           <CheckCircle size={12} /> 已匹配白名单
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 text-slate-400 text-xs font-semibold bg-white/5 border border-white/10 px-2 py-0.5 rounded">
+                        <span className="inline-flex items-center gap-1 text-[var(--color-text-secondary)] text-xs font-semibold bg-gray-100 dark:bg-[#101114] border border-[var(--color-border-card)] px-2 py-0.5 rounded-full">
                           <ShieldAlert size={12} /> 普通社会车辆
                         </span>
                       )}
                     </td>
-                    <td className="py-3.5 px-4 text-slate-400 font-mono">
+                    <td className="py-3.5 px-4 text-[var(--color-text-secondary)] font-mono text-xs">
                       {new Date(r.timestamp).toLocaleTimeString()}
                     </td>
                   </tr>
@@ -157,13 +157,13 @@ export default function VehicleMonitor() {
       </div>
 
       {/* 右侧：白名单管理 */}
-      <div className="glass-panel rounded-3xl p-6 space-y-6">
+      <div className="dashboard-card p-6 space-y-6">
         <div>
-          <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
+          <h2 className="text-xl font-bold text-[var(--color-text-primary)] flex items-center gap-2">
             <Award size={22} className="text-emerald-400" />
             车牌白名单配置
           </h2>
-          <p className="text-slate-400 text-sm mt-0.5">白名单内车辆在禁停区临时停车免于罚款</p>
+          <p className="text-[var(--color-text-secondary)] text-sm mt-0.5">白名单内车辆在禁停区临时停车免于罚款</p>
         </div>
 
         {/* 添加新车牌 */}
@@ -173,11 +173,11 @@ export default function VehicleMonitor() {
             placeholder="例如: 粤B88888" 
             value={newPlate}
             onChange={e => setNewPlate(e.target.value)}
-            className="flex-1 bg-slate-900/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500 uppercase"
+            className="flex-1 bg-white/90 dark:bg-[#1C1C22]/90 border border-[var(--color-border-card)] rounded-xl px-4 py-2.5 text-sm text-[var(--color-text-primary)] outline-none focus:border-emerald-500 uppercase transition-colors"
           />
           <button 
             type="submit" 
-            className="bg-emerald-500 hover:bg-emerald-600 text-dark-900 font-semibold px-4 py-2.5 rounded-xl flex items-center gap-1 text-sm hover-scale"
+            className="bg-emerald-500 hover:bg-emerald-600 text-[#101114] font-bold px-4 py-2.5 rounded-xl flex items-center gap-1 text-sm hover:scale-105 transition-transform"
           >
             <Plus size={16} /> 添加
           </button>
@@ -186,15 +186,15 @@ export default function VehicleMonitor() {
         {/* 白名单列表 */}
         <div className="space-y-2.5 max-h-96 overflow-y-auto pr-2">
           {whitelist.length === 0 ? (
-            <p className="text-slate-500 text-center py-6 text-sm">白名单数据库暂无记录</p>
+            <p className="text-[var(--color-text-muted)] text-center py-6 text-sm">白名单数据库暂无记录</p>
           ) : (
             whitelist.map((plate, index) => (
-              <div key={index} className="flex justify-between items-center bg-slate-900/40 border border-white/5 rounded-xl px-4 py-3 hover:border-white/10 transition-colors">
-                <span className="font-mono font-bold text-slate-200 tracking-wide">{plate}</span>
+              <div key={index} className="flex justify-between items-center bg-gray-100 dark:bg-[#101114] border border-[var(--color-border-card)] rounded-xl px-4 py-3 hover:border-[var(--color-border-card)] transition-colors">
+                <span className="font-mono font-bold text-gray-900 dark:text-gray-200 tracking-wide">{plate}</span>
                 <button 
                   type="button" 
                   onClick={() => handleRemovePlate(plate)}
-                  className="text-rose-400/80 hover:text-rose-400 hover:bg-rose-500/10 p-1.5 rounded-lg transition-colors"
+                  className="text-rose-500/80 hover:text-rose-400 hover:bg-rose-500/10 p-1.5 rounded-lg transition-colors"
                   title="移除白名单"
                 >
                   <Trash2 size={16} />

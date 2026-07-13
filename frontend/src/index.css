@@ -5,9 +5,49 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    /* Light Mode Variables (Default) */
+    --color-bg-canvas: #F3F4F6;
+    --color-bg-app: #F9FAFB;
+    --color-bg-card: #FFFFFF;
+    --color-bg-card-hover: #F8FAFC;
+    --color-border-card: #E2E8F0;
+    --color-text-primary: #0F172A;
+    --color-text-secondary: #475569;
+    --color-text-muted: #94A3B8;
+    --color-accent-electronics-bg: rgba(204, 164, 59, 0.1);
+    --color-accent-electronics-text: #B45309;
+    --color-accent-medical-bg: rgba(0, 245, 212, 0.1);
+    --color-accent-medical-text: #0D9488;
+    --color-accent-food-bg: rgba(142, 142, 147, 0.15);
+    --color-accent-food-text: #475569;
+    --color-accent-docs-bg: rgba(82, 83, 86, 0.1);
+    --color-accent-docs-text: #334155;
+  }
+
+  .dark {
+    /* Dark Mode Variables */
+    --color-bg-canvas: #000000;
+    --color-bg-app: #000000;
+    --color-bg-card: #0D0E12;
+    --color-bg-card-hover: #15161A;
+    --color-border-card: #1F2025;
+    --color-text-primary: #FFFFFF;
+    --color-text-secondary: #8B8C8F;
+    --color-text-muted: #525356;
+    --color-accent-electronics-bg: rgba(204, 164, 59, 0.1);
+    --color-accent-electronics-text: #CCA43B;
+    --color-accent-medical-bg: rgba(0, 245, 212, 0.1);
+    --color-accent-medical-text: #00F5D4;
+    --color-accent-food-bg: rgba(142, 142, 147, 0.15);
+    --color-accent-food-text: #A0A0A0;
+    --color-accent-docs-bg: rgba(82, 83, 86, 0.2);
+    --color-accent-docs-text: #FFFFFF;
+  }
+
   body {
-    @apply bg-dark-900 text-slate-100 font-sans antialiased overflow-x-hidden;
-    background: radial-gradient(circle at 50% 0%, #111827 0%, #030712 100%);
+    @apply bg-[var(--color-bg-canvas)] text-[var(--color-text-primary)] font-sans antialiased overflow-x-hidden;
+    transition: background-color 0.3s ease, color 0.3s ease;
   }
 
   /* Custom glassmorphism scrollbar */
@@ -50,4 +90,27 @@
 .hover-scale:hover {
   @apply transform scale-[1.02] -translate-y-[1px];
   box-shadow: 0 10px 25px -5px rgba(59, 130, 246, 0.1), 0 8px 10px -6px rgba(59, 130, 246, 0.1);
+}
+
+/* Premium Dashboard Utility Classes */
+.dashboard-card {
+  background-color: var(--color-bg-card);
+  border: 1px solid var(--color-border-card);
+  border-radius: 1.25rem; /* 20px */
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.25);
+}
+
+.dashboard-card:hover {
+  background-color: var(--color-bg-card-hover);
+  border-color: rgba(255, 255, 255, 0.05);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+}
+
+.transition-glow {
+  transition: all 0.2s ease-in-out;
+}
+.transition-glow:hover {
+  box-shadow: 0 0 15px rgba(255, 255, 255, 0.05);
 }

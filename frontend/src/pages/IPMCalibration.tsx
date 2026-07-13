@@ -477,11 +477,11 @@ export default function IPMCalibration() {
 
   return (
     <div className="space-y-6">
-      <div className="glass-panel rounded-3xl p-6">
-        <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
+      <div className="dashboard-card p-6">
+        <h2 className="text-xl font-bold text-[var(--color-text-primary)] flex items-center gap-2">
           <MapPin className="text-emerald-400" /> IPM 逆透视变换标定
         </h2>
-        <p className="text-slate-400 text-sm mt-1">在摄像头画面和俯视图上各标记4个对应点（顺时针），计算单应性矩阵用于热力图坐标映射</p>
+        <p className="text-[var(--color-text-secondary)] text-sm mt-1">在摄像头画面和俯视图上各标记4个对应点（顺时针），计算单应性矩阵用于热力图坐标映射</p>
       </div>
 
       {message && (
@@ -491,13 +491,13 @@ export default function IPMCalibration() {
       )}
 
       {activeSandCameras.length > 0 && (
-        <div className="glass-panel rounded-3xl p-4">
+        <div className="dashboard-card p-4">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-slate-400 mr-2">沙盘摄像头</span>
+            <span className="text-xs text-[var(--color-text-secondary)] mr-2">沙盘摄像头</span>
             <button
               type="button"
               onClick={() => selectDevice('default')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${selectedDeviceId === 'default' ? 'bg-blue-500/20 text-blue-300 border-blue-500/40' : 'bg-slate-900/50 text-slate-400 border-white/10 hover:text-slate-200'}`}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${selectedDeviceId === 'default' ? 'bg-blue-500/20 text-blue-300 border-blue-500/40' : 'bg-white/90 dark:bg-[#1C1C22]/90 text-[var(--color-text-secondary)] border-[var(--color-border-card)] hover:text-gray-900 dark:text-gray-200'}`}
             >
               默认推流
             </button>
@@ -508,7 +508,7 @@ export default function IPMCalibration() {
                   key={camera.id}
                   type="button"
                   onClick={() => selectDevice(deviceId)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${selectedDeviceId === deviceId ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-slate-900/50 text-slate-400 border-white/10 hover:text-slate-200'}`}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${selectedDeviceId === deviceId ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-white/90 dark:bg-[#1C1C22]/90 text-[var(--color-text-secondary)] border-[var(--color-border-card)] hover:text-gray-900 dark:text-gray-200'}`}
                 >
                   {camera.id} {camera.name}
                 </button>
@@ -521,8 +521,8 @@ export default function IPMCalibration() {
       <div className="space-y-3">
         <div className="flex flex-wrap items-end gap-4">
           <div>
-            <label className="text-xs text-slate-400 block mb-1">摄像头 ID</label>
-            <input value={cameraId} onChange={e => setCameraId(e.target.value)} className="bg-slate-900/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-slate-200 w-44 outline-none focus:border-blue-500" />
+            <label className="text-xs text-[var(--color-text-secondary)] block mb-1">摄像头 ID</label>
+            <input value={cameraId} onChange={e => setCameraId(e.target.value)} className="bg-white/90 dark:bg-[#1C1C22]/90 border border-[var(--color-border-card)] rounded-xl px-4 py-2.5 text-sm text-gray-900 dark:text-gray-200 w-44 outline-none focus:border-blue-500 transition-colors" />
           </div>
           <button
             onClick={handleCalibrate}
@@ -535,10 +535,10 @@ export default function IPMCalibration() {
 
         {/* Lane selection buttons */}
         <div>
-          <label className="text-xs text-slate-400 block mb-2">已标定车道（点击选择）</label>
+          <label className="text-xs text-[var(--color-text-secondary)] block mb-2">已标定车道（点击选择）</label>
           <div className="flex flex-wrap items-center gap-2">
             {cameraLanes.length === 0 ? (
-              <span className="text-xs text-slate-500">暂无，请先标定或手动输入车道ID</span>
+              <span className="text-xs text-[var(--color-text-muted)]">暂无，请先标定或手动输入车道ID</span>
             ) : (
               cameraLanes.map((lid: string) => (
                 <button
@@ -547,7 +547,7 @@ export default function IPMCalibration() {
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                     laneId === lid
                       ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40'
-                      : 'bg-slate-900/40 text-slate-400 border border-white/10 hover:border-blue-500/30 hover:text-slate-200'
+                      : 'bg-white/90 dark:bg-[#1C1C22]/90 text-[var(--color-text-secondary)] border border-[var(--color-border-card)] hover:border-blue-500/30 hover:text-gray-900 dark:text-gray-200'
                   }`}
                 >
                   {lid}
@@ -556,7 +556,7 @@ export default function IPMCalibration() {
             )}
             <button
               onClick={() => { setLaneId(''); setCameraPoints([]); setWorldPoints([]); }}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-900/40 text-slate-500 border border-dashed border-slate-600 hover:border-slate-400 hover:text-slate-300 transition-colors"
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white/90 dark:bg-[#1C1C22]/90 text-[var(--color-text-muted)] border border-dashed border-gray-600 hover:border-gray-400 hover:text-gray-300 transition-colors"
             >
               + 新建
             </button>
@@ -564,32 +564,32 @@ export default function IPMCalibration() {
         </div>
 
         <div>
-          <label className="text-xs text-slate-400 block mb-1">车道 ID（可手动输入）</label>
-          <input value={laneId} onChange={e => setLaneId(e.target.value)} placeholder="输入车道名称后回车" className="bg-slate-900/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-slate-200 w-56 outline-none focus:border-blue-500" />
+          <label className="text-xs text-[var(--color-text-secondary)] block mb-1">车道 ID（可手动输入）</label>
+          <input value={laneId} onChange={e => setLaneId(e.target.value)} placeholder="输入车道名称后回车" className="bg-white/90 dark:bg-[#1C1C22]/90 border border-[var(--color-border-card)] rounded-xl px-4 py-2.5 text-sm text-gray-900 dark:text-gray-200 w-56 outline-none focus:border-blue-500 transition-colors" />
         </div>
       </div>
 
       {/* Dual panels */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
         {/* Camera panel */}
-        <div className="glass-panel rounded-3xl p-6">
+        <div className="dashboard-card p-6">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold text-slate-200 flex items-center gap-2">
+            <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${wsStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
               摄像头画面
             </h3>
             <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400">{cameraPoints.length}/4 点</span>
-              <button onClick={() => setCameraPoints([])} className="text-xs text-slate-500 hover:text-rose-400 transition-colors">清除</button>
+              <span className="text-xs text-[var(--color-text-secondary)]">{cameraPoints.length}/4 点</span>
+              <button onClick={() => setCameraPoints([])} className="text-xs text-[var(--color-text-muted)] hover:text-rose-400 transition-colors">清除</button>
             </div>
           </div>
-          <div className="relative w-full max-h-[62vh] rounded-xl overflow-hidden bg-slate-950 border border-slate-700" style={{ aspectRatio: videoAspectRatio }}>
+          <div className="relative w-full max-h-[62vh] rounded-xl overflow-hidden bg-gray-100 dark:bg-[#0F1013] border border-[var(--color-border-card)]" style={{ aspectRatio: videoAspectRatio }}>
             <canvas ref={cameraCanvasRef} onClick={handleCameraClick} className="absolute inset-0 w-full h-full block" style={{ cursor: cameraPoints.length < 4 ? 'crosshair' : 'default' }} />
             {!hasFrame && (
-              <div className="absolute inset-0 flex items-center justify-center bg-slate-950">
+              <div className="absolute inset-0 flex items-center justify-center bg-gray-100 dark:bg-[#0F1013]">
                 <div className="text-center">
                   <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-                  <p className="text-slate-500 text-sm">等待视频流...</p>
+                  <p className="text-[var(--color-text-muted)] text-sm">等待视频流...</p>
                 </div>
               </div>
             )}
@@ -597,28 +597,28 @@ export default function IPMCalibration() {
         </div>
 
         {/* World panel */}
-        <div className="glass-panel rounded-3xl p-6">
+        <div className="dashboard-card p-6">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold text-slate-200 flex items-center gap-2"><Move size={16} className="text-blue-400" /> 俯视图（白板）</h3>
+            <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2"><Move size={16} className="text-blue-400" /> 俯视图（白板）</h3>
             <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400">{worldPoints.length}/4 点</span>
-              <button onClick={() => setWorldPoints([])} className="text-xs text-slate-500 hover:text-rose-400 transition-colors">清除</button>
+              <span className="text-xs text-[var(--color-text-secondary)]">{worldPoints.length}/4 点</span>
+              <button onClick={() => setWorldPoints([])} className="text-xs text-[var(--color-text-muted)] hover:text-rose-400 transition-colors">清除</button>
             </div>
           </div>
-          <div className="relative h-[720px] xl:h-[760px] rounded-xl overflow-auto bg-slate-950 border border-slate-700">
+          <div className="relative h-[720px] xl:h-[760px] rounded-xl overflow-auto bg-gray-100 dark:bg-[#0F1013] border border-[var(--color-border-card)]">
             <canvas ref={worldCanvasRef} onClick={handleWorldClick} className="block" style={{ width: `${WORLD_WIDTH * WORLD_DISPLAY_SCALE}px`, height: `${WORLD_HEIGHT * WORLD_DISPLAY_SCALE}px`, cursor: worldPoints.length < 4 ? 'crosshair' : 'grab' }} />
           </div>
         </div>
       </div>
 
       {/* Transform verification */}
-      <div className="glass-panel rounded-3xl p-6">
+      <div className="dashboard-card p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="font-semibold text-slate-200 flex items-center gap-2">
+          <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2">
             <Crosshair size={16} className="text-rose-400" /> 俯视坐标验证
           </h3>
           <div className="flex items-center gap-3">
-            <span className="text-xs text-slate-400">当前 {currentVehicles.length} 辆车 · 每5秒自动刷新</span>
+            <span className="text-xs text-[var(--color-text-secondary)]">当前 {currentVehicles.length} 辆车 · 每5秒自动刷新</span>
             <button
               onClick={doTransform}
               disabled={!laneId || currentVehicles.length === 0}
@@ -629,14 +629,14 @@ export default function IPMCalibration() {
           </div>
         </div>
         {transformedVehicles.length === 0 ? (
-          <p className="text-slate-500 text-sm py-4 text-center">
+          <p className="text-[var(--color-text-muted)] text-sm py-4 text-center">
             {!laneId ? '请先选择车道 ID' : currentVehicles.length === 0 ? '等待车辆检测数据...' : '转换中...'}
           </p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-white/5 text-slate-400 text-xs uppercase tracking-wider">
+                <tr className="border-b border-[var(--color-border-card)] text-[var(--color-text-secondary)] text-xs uppercase tracking-wider">
                   <th className="py-2 px-3">Track ID</th>
                   <th className="py-2 px-3">类别</th>
                   <th className="py-2 px-3">摄像头坐标</th>
@@ -644,12 +644,12 @@ export default function IPMCalibration() {
                   <th className="py-2 px-3">状态</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/5">
+              <tbody className="divide-y divide-[#222328]/50">
                 {transformedVehicles.map((v: any, i: number) => (
-                  <tr key={i} className="hover:bg-white/5 transition-colors">
+                  <tr key={i} className="hover:hover:bg-gray-100 dark:hover:bg-[#1C1E24]/40 transition-colors">
                     <td className="py-2 px-3 font-mono text-blue-400">#{v.id}</td>
-                    <td className="py-2 px-3 text-slate-300 capitalize">{v.class}</td>
-                    <td className="py-2 px-3 font-mono text-slate-400">
+                    <td className="py-2 px-3 text-gray-300 capitalize">{v.class}</td>
+                    <td className="py-2 px-3 font-mono text-[var(--color-text-secondary)]">
                       ({v.camera[0].toFixed(0)}, {v.camera[1].toFixed(0)})
                     </td>
                     <td className="py-2 px-3 font-mono text-emerald-400">
@@ -671,26 +671,26 @@ export default function IPMCalibration() {
       </div>
 
       {/* Existing calibrations */}
-      <div className="glass-panel rounded-3xl p-6">
+      <div className="dashboard-card p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="font-semibold text-slate-200 flex items-center gap-2">
+          <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2">
             <RefreshCw size={16} className="text-blue-400" /> 已标定车道
           </h3>
           <button onClick={loadConfigs} className="text-xs text-blue-400 hover:text-blue-300 transition-colors">刷新</button>
         </div>
         {Object.keys(calibratedLanes).length === 0 ? (
-          <p className="text-slate-500 text-sm py-4 text-center">暂无标定数据</p>
+          <p className="text-[var(--color-text-muted)] text-sm py-4 text-center">暂无标定数据</p>
         ) : (
           <div className="space-y-3">
             {Object.entries(calibratedLanes).map(([cid, lanes]) =>
               lanes.map((lid: string) => (
-                <div key={`${cid}/${lid}`} className="flex items-center justify-between bg-slate-900/40 border border-white/5 rounded-xl px-4 py-3">
+                <div key={`${cid}/${lid}`} className="flex items-center justify-between bg-white/90 dark:bg-[#1C1C22]/90 border border-[var(--color-border-card)] rounded-xl px-4 py-3 hover:border-[var(--color-border-card)] transition-colors">
                   <div className="flex items-center gap-3">
                     <span className="text-sm font-mono text-blue-400">{cid}</span>
-                    <span className="text-xs text-slate-500">/</span>
-                    <span className="text-sm font-semibold text-slate-200">{lid}</span>
+                    <span className="text-xs text-[var(--color-text-muted)]">/</span>
+                    <span className="text-sm font-semibold text-gray-900 dark:text-gray-200">{lid}</span>
                   </div>
-                  <button onClick={() => handleDelete(cid, lid)} className="text-rose-400/60 hover:text-rose-400 hover:bg-rose-500/10 p-1.5 rounded-lg transition-colors">
+                  <button onClick={() => handleDelete(cid, lid)} className="text-rose-500/80 hover:text-rose-400 hover:bg-rose-500/10 p-1.5 rounded-lg transition-colors">
                     <Trash2 size={16} />
                   </button>
                 </div>

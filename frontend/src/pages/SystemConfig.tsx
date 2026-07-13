@@ -90,12 +90,12 @@ export default function SystemConfig() {
     <div className="space-y-6">
       
       {/* 头部说明 */}
-      <div className="glass-panel rounded-3xl p-6">
-        <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
+      <div className="dashboard-card p-6">
+        <h2 className="text-xl font-bold text-[var(--color-text-primary)] flex items-center gap-2">
           <Sliders className="text-blue-400" />
           推理流水线动态资源管控
         </h2>
-        <p className="text-slate-400 text-sm mt-1">
+        <p className="text-[var(--color-text-secondary)] text-sm mt-1">
           本页面可实时管控 FastAPI 的推理引擎。**禁用不常用节点将立即释放对应的显存与算力**，实现极高的运行效能。
         </p>
       </div>
@@ -103,7 +103,7 @@ export default function SystemConfig() {
       {loading && configs.length === 0 ? (
         <div className="text-center py-12">
           <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-          <p className="text-slate-500 text-sm">正在加载流水线参数配置...</p>
+          <p className="text-[var(--color-text-muted)] text-sm">正在加载流水线参数配置...</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -113,18 +113,18 @@ export default function SystemConfig() {
             return (
               <div 
                 key={index} 
-                className={`glass-panel rounded-3xl p-6 border transition-all duration-300 ${
+                className={`dashboard-card p-6 border transition-all duration-300 ${
                   config.enabled 
                     ? 'border-blue-500/20 shadow-lg shadow-blue-500/5' 
-                    : 'border-white/5 bg-slate-900/10'
+                    : 'border-[var(--color-border-card)] bg-gray-100 dark:bg-[#101114]/50'
                 }`}
               >
                 
                 {/* 标题 & 开关 */}
                 <div className="flex justify-between items-start gap-4">
                   <div>
-                    <h3 className="text-lg font-bold text-slate-100">{info.title}</h3>
-                    <span className="text-[10px] text-slate-500 mt-1 uppercase tracking-wider block font-mono">
+                    <h3 className="text-lg font-bold text-[var(--color-text-primary)]">{info.title}</h3>
+                    <span className="text-[10px] text-[var(--color-text-muted)] mt-1 uppercase tracking-wider block font-mono">
                       系统标识: {config.model_name}
                     </span>
                   </div>
@@ -133,7 +133,7 @@ export default function SystemConfig() {
                     type="button" 
                     onClick={() => handleToggle(config.model_name, config.enabled)}
                     className={`focus:outline-none transition-colors duration-250 ${
-                      config.enabled ? 'text-blue-500' : 'text-slate-600'
+                      config.enabled ? 'text-blue-500' : 'text-gray-600'
                     }`}
                   >
                     {config.enabled ? <ToggleRight size={44} /> : <ToggleLeft size={44} />}
@@ -141,12 +141,12 @@ export default function SystemConfig() {
                 </div>
 
                 {/* 描述 */}
-                <p className="text-xs text-slate-400 mt-3 leading-relaxed">
+                <p className="text-xs text-[var(--color-text-secondary)] mt-3 leading-relaxed">
                   {info.desc}
                 </p>
 
                 {/* Footer status */}
-                <div className="mt-6 flex justify-between items-center text-[10px] text-slate-500">
+                <div className="mt-6 flex justify-between items-center text-[10px] text-[var(--color-text-muted)]">
                   <span className="flex items-center gap-1">
                     <Cpu size={10} /> {info.hardware}
                   </span>
@@ -156,7 +156,7 @@ export default function SystemConfig() {
                     </span>
                   ) : (
                     <span>
-                      当前状态: <strong className={config.enabled ? 'text-emerald-400' : 'text-slate-500'}>
+                      当前状态: <strong className={config.enabled ? 'text-emerald-400' : 'text-[var(--color-text-muted)]'}>
                         {config.enabled ? '已加载且工作中' : '挂起并闲置释放'}
                       </strong>
                     </span>

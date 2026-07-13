@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { DashboardWebSocket, type FrameMeta } from '../services/ws';
 import { statsAPI, configAPI, streamAPI, anomalyAPI } from '../services/api';
-import { Cpu, Database, Activity, HardDrive, Wifi, ShieldAlert, Car, Navigation, FileText, PenTool, Save, X, Trash2 } from 'lucide-react';
+import { Activity, ShieldAlert, Car, PenTool, Trash2 } from 'lucide-react';
 
 interface Vehicle {
   id: number;
@@ -29,23 +29,15 @@ interface Anomaly {
   label: string;
 }
 
-interface MetricHistoryItem {
-  cpu_usage: number;
-  memory_usage: number;
-  network_rx: number;
-  video_fps: number;
-  timestamp: string;
-}
+
 
 export default function Dashboard() {
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
   const [hasFrame, setHasFrame] = useState(false);
   const [fps, setFps] = useState<number>(0);
-  const [congestion, setCongestion] = useState<string>('low');
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [violations, setViolations] = useState<Violation[]>([]);
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
-  const [plateOcrEnabled, setPlateOcrEnabled] = useState(false);
   const [sandCameras, setSandCameras] = useState<SandCamera[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('default');
   const [activeRtspDevices, setActiveRtspDevices] = useState<string[]>([]);
@@ -92,7 +84,6 @@ export default function Dashboard() {
     gpu_details: null as { name: string; load: number; memory_total: number; memory_used: number; memory_percent: number; temperature: number } | null
   });
 
-  const [metricsHistory, setMetricsHistory] = useState<MetricHistoryItem[]>([]);
   const wsRef = useRef<DashboardWebSocket | null>(null);
 
   // Fetch metrics history on mount
@@ -101,9 +92,6 @@ export default function Dashboard() {
       try {
         const res = await statsAPI.system(15);
         if (res.code === 200) {
-          if (res.data.history) {
-            setMetricsHistory(res.data.history);
-          }
           if (res.data.realtime) {
             const rt = res.data.realtime;
             setMetrics({
@@ -126,21 +114,6 @@ export default function Dashboard() {
     };
     fetchHistory();
     const interval = setInterval(fetchHistory, 15000);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    const checkModels = async () => {
-      try {
-        const res = await configAPI.getModels();
-        if (res.code === 200 && Array.isArray(res.data)) {
-          const ocrNode = res.data.find((m: any) => m.model_name === 'plate_ocr');
-          setPlateOcrEnabled(ocrNode?.enabled ?? false);
-        }
-      } catch {}
-    };
-    checkModels();
-    const interval = setInterval(checkModels, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -177,7 +150,6 @@ export default function Dashboard() {
 
   const applyPayload = (data: any) => {
     if (data.fps !== undefined) setFps(data.fps);
-    if (data.congestion_level) setCongestion(data.congestion_level);
     if (data.vehicles) setVehicles(data.vehicles);
     if (data.violations) setViolations(data.violations);
     if (data.anomalies) setAnomalies(data.anomalies);
@@ -483,54 +455,9 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Render SVG Chart using pure SVG paths (no heavy libraries)
-  const renderLineChart = (data: number[], color: string, maxVal = 100) => {
-    if (data.length === 0) return null;
-    const width = 500;
-    const height = 120;
-    const padding = 10;
-    const points = data.map((val, idx) => {
-      const x = padding + (idx / (data.length - 1)) * (width - padding * 2);
-      const y = height - padding - (val / maxVal) * (height - padding * 2);
-      return `${x},${y}`;
-    }).join(' ');
 
-    return (
-      <svg className="w-full h-28" viewBox={`0 0 ${width} ${height}`}>
-        {/* Grid lines */}
-        <line x1={padding} y1={height/2} x2={width-padding} y2={height/2} stroke="rgba(255,255,255,0.05)" strokeDasharray="3,3" />
-        <line x1={padding} y1={height - padding} x2={width-padding} y2={height - padding} stroke="rgba(255,255,255,0.1)" />
-        
-        {/* Gradient fill */}
-        <path
-          d={`M ${padding},${height - padding} L ${points} L ${width - padding},${height - padding} Z`}
-          fill={`url(#grad-${color})`}
-          opacity="0.15"
-        />
-        
-        {/* Main Line */}
-        <polyline
-          fill="none"
-          stroke={color}
-          strokeWidth="2.5"
-          points={points}
-          className="transition-all duration-300"
-        />
-        
-        <defs>
-          <linearGradient id={`grad-${color}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={color} />
-            <stop offset="100%" stopColor="transparent" />
-          </linearGradient>
-        </defs>
-      </svg>
-    );
-  };
 
   // Helper values
-  const totalVehiclesCount = vehicles.length;
-  const activeViolationsCount = violations.length;
-  const activeAnomaliesCount = anomalies.length;
   const platedVehicles = vehicles.filter(v => v.plate);
 
   // Zone drawing handlers
@@ -577,9 +504,7 @@ export default function Dashboard() {
     }
   };
 
-  const handleClearCurrent = () => {
-    setCurrentZonePoints([]);
-  };
+
 
   const handleRemoveAllZones = async () => {
     try {
@@ -596,436 +521,240 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="w-full max-w-[1440px] mx-auto bg-transparent text-[var(--color-text-primary)] rounded-[32px] overflow-hidden">
       
-      {/* 顶部指标卡片 */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
+      {/* ================= MAIN DASHBOARD GRID ================= */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         
-        <div className="glass-panel hover-scale rounded-2xl p-5 flex items-center justify-between">
-          <div>
-            <p className="text-sm font-semibold text-slate-400 uppercase tracking-wider">实时车流量</p>
-            <h3 className="text-3xl font-bold mt-1 text-slate-100">{totalVehiclesCount} <span className="text-xs font-normal text-slate-400">辆</span></h3>
-          </div>
-          <div className="p-3 bg-blue-500/10 rounded-xl text-blue-400">
-            <Car size={24} />
-          </div>
-        </div>
-
-        <div className="glass-panel hover-scale rounded-2xl p-5 flex items-center justify-between">
-          <div>
-            <p className="text-sm font-semibold text-slate-400 uppercase tracking-wider">拥堵程度</p>
-            <h3 className={`text-2xl font-bold mt-1 uppercase ${
-              congestion === 'high' ? 'text-rose-500' : congestion === 'medium' ? 'text-amber-500' : 'text-emerald-500'
-            }`}>
-              {congestion === 'high' ? '严重拥堵' : congestion === 'medium' ? '中度拥堵' : '道路顺畅'}
-            </h3>
-          </div>
-          <div className={`p-3 rounded-xl ${
-            congestion === 'high' ? 'bg-rose-500/10 text-rose-400' : congestion === 'medium' ? 'bg-amber-500/10 text-amber-400' : 'bg-emerald-500/10 text-emerald-400'
-          }`}>
-            <Navigation size={24} />
-          </div>
-        </div>
-
-        <div className="glass-panel hover-scale rounded-2xl p-5 flex items-center justify-between">
-          <div>
-            <p className="text-sm font-semibold text-slate-400 uppercase tracking-wider">超时车辆</p>
-            <h3 className="text-3xl font-bold mt-1 text-rose-500">{activeViolationsCount} <span className="text-xs font-normal text-slate-400">起</span></h3>
-          </div>
-          <div className="p-3 bg-rose-500/10 rounded-xl text-rose-400">
-            <ShieldAlert size={24} />
-          </div>
-        </div>
-
-        <div className="glass-panel hover-scale rounded-2xl p-5 flex items-center justify-between">
-          <div>
-            <p className="text-sm font-semibold text-slate-400 uppercase tracking-wider">路面异常</p>
-            <h3 className="text-3xl font-bold mt-1 text-amber-500">{activeAnomaliesCount} <span className="text-xs font-normal text-slate-400">处</span></h3>
-          </div>
-          <div className="p-3 bg-amber-500/10 rounded-xl text-amber-400">
-            <Activity size={24} />
-          </div>
-        </div>
-
-      </div>
-
-      {/* 主面板内容 */}
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
-        
-        {/* 视频推流区 (占 2/3 宽度) */}
-        <div className="xl:col-span-3 glass-panel-glow rounded-3xl p-5 flex flex-col justify-between">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <span className={`w-2.5 h-2.5 rounded-full ${wsStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-              <h2 className="font-semibold text-lg">实时监控画面接收</h2>
-            </div>
-            <div className="text-sm text-slate-400 flex items-center gap-4">
-              <span>FPS: <strong className="text-blue-400">{fps.toFixed(1)}</strong></span>
-              <span>状态: 
-                <strong className={wsStatus === 'connected' ? 'text-emerald-400' : 'text-rose-400'}>
-                  {wsStatus === 'connected' ? ' 已连通' : wsStatus === 'connecting' ? ' 正在重连...' : ' 未连通'}
-                </strong>
-              </span>
-            </div>
-          </div>
+        {/* ----------------- LEFT SIDE PANEL (4 columns) ----------------- */}
+        <section className="lg:col-span-4 flex flex-col gap-6 w-full">
           
-          {activeSandCameras.length > 0 && (
-            <div className="mb-4 flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => selectDevice('default')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${selectedDeviceId === 'default' ? 'bg-blue-500/20 text-blue-300 border-blue-500/40' : 'bg-slate-900/50 text-slate-400 border-white/10 hover:text-slate-200'}`}
-              >
-                边端默认
+          {/* System Load */}
+          <div className="dashboard-card p-6 flex flex-col justify-between min-h-[300px]">
+            <div className="flex justify-between items-start">
+              <div>
+                <h3 className="text-sm font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">服务器核心负载</h3>
+              </div>
+              <button className="p-1 rounded-full border border-[var(--color-border-card)] hover:bg-white/5">
+                <Activity className="w-4 h-4 text-[var(--color-text-secondary)]" />
               </button>
-              {activeSandCameras.map(camera => {
-                const deviceId = `rtsp_${camera.id}`;
-                const active = Boolean(frameUrlsRef.current[deviceId] || payloadsRef.current[deviceId]);
-                return (
-                  <button
-                    key={camera.id}
-                    type="button"
-                    onClick={() => selectDevice(deviceId)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${selectedDeviceId === deviceId ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : active ? 'bg-slate-900/60 text-slate-200 border-emerald-500/20' : 'bg-slate-900/40 text-slate-500 border-white/10 hover:text-slate-300'}`}
-                  >
-                    {camera.id} {camera.name}
-                  </button>
-                );
-              })}
-              <span className="text-xs text-slate-500">只显示边端正在推流的沙盘摄像头</span>
             </div>
-          )}
-          <div className="relative rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 flex justify-center items-center min-h-[360px]" onClick={handleCanvasClick} style={{ cursor: isDrawing ? 'crosshair' : 'default', aspectRatio: videoAspectRatio }}>
-            <canvas ref={canvasRef} className="w-full h-full block" />
-            {!hasFrame && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8 bg-slate-950">
-                <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-                <p className="text-slate-400 text-sm">等待边缘推流信号源输入...</p>
-                <p className="text-xs text-slate-600 mt-2">请访问 /phone 页面启动摄像头或本地视频推流</p>
-              </div>
-            )}
-            
-            {/* Float HUD */}
-            {hasFrame && (
-              <div className="absolute top-4 left-4 bg-slate-900/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/10 text-xs flex gap-4">
-                <span>白名单匹配: <span className="text-emerald-400">已启用</span></span>
-              </div>
-            )}
-          </div>
-        </div>
 
-        {/* 资源监控 & 事件警告 */}
-        <div className="space-y-6">
-          
-          {/* 服务器硬件指标 */}
-          <div className="glass-panel rounded-3xl p-5">
-            <h2 className="font-semibold text-lg mb-4 flex items-center gap-2">
-              <Database size={20} className="text-blue-400" />
-              服务器硬件状态 (云端/Windows)
-            </h2>
-            
-            <div className="space-y-4">
-              {/* CPU */}
-              <div>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-slate-400 flex items-center gap-1.5">
-                    <Cpu size={14} /> CPU 使用率
-                  </span>
-                  <span className="font-semibold">{metrics.cpu_usage.toFixed(1)}%</span>
-                </div>
-                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-                  <div 
-                    className="bg-blue-500 h-full transition-all duration-500 ease-out" 
-                    style={{ width: `${metrics.cpu_usage}%` }}
-                  />
-                </div>
-                {metrics.cpu_details && (
-                  <span className="text-[10px] text-slate-500 mt-1 block">
-                    核心: 物理 {metrics.cpu_details.cores_physical} / 逻辑 {metrics.cpu_details.cores_logical} | 频率: {metrics.cpu_details.frequency_current_mhz} MHz
-                  </span>
-                )}
-              </div>
-
-              {/* Memory */}
-              <div>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-slate-400 flex items-center gap-1.5">
-                    <HardDrive size={14} /> 内存使用率
-                  </span>
-                  <span className="font-semibold">{metrics.memory_usage.toFixed(1)}%</span>
-                </div>
-                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-                  <div 
-                    className="bg-cyan-400 h-full transition-all duration-500 ease-out" 
-                    style={{ width: `${metrics.memory_usage}%` }}
-                  />
-                </div>
-                {metrics.memory_details && (
-                  <span className="text-[10px] text-slate-500 mt-1 block">
-                    已用: {metrics.memory_details.used_gb.toFixed(1)} GB / 共 {metrics.memory_details.total_gb.toFixed(1)} GB
-                  </span>
-                )}
-              </div>
-
-              {/* Disk */}
-              <div>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-slate-400 flex items-center gap-1.5">
-                    <HardDrive size={14} className="text-emerald-400" /> 磁盘空间
-                  </span>
-                  <span className="font-semibold">{metrics.disk_usage.toFixed(1)}%</span>
-                </div>
-                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-                  <div 
-                    className="bg-emerald-500 h-full transition-all duration-500 ease-out" 
-                    style={{ width: `${metrics.disk_usage}%` }}
-                  />
-                </div>
-                {metrics.disk_details && (
-                  <span className="text-[10px] text-slate-500 mt-1 block">
-                    已用: {metrics.disk_details.used_gb.toFixed(0)} GB / 共 {metrics.disk_details.total_gb.toFixed(0)} GB
-                  </span>
-                )}
-              </div>
-
-              {/* Network */}
-              <div className="grid grid-cols-2 gap-4 pt-2">
-                <div className="bg-slate-900/50 rounded-xl p-3 border border-white/5">
-                  <span className="text-xs text-slate-400 flex items-center gap-1">
-                    <Wifi size={12} className="rotate-45" /> 下行速度
-                  </span>
-                  <p className="text-lg font-bold text-slate-100 mt-1">{metrics.network_rx.toFixed(1)} <span className="text-xs font-normal text-slate-400">Mbps</span></p>
-                </div>
-                <div className="bg-slate-900/50 rounded-xl p-3 border border-white/5">
-                  <span className="text-xs text-slate-400 flex items-center gap-1">
-                    <Wifi size={12} className="-rotate-45" /> 上行速度
-                  </span>
-                  <p className="text-lg font-bold text-slate-100 mt-1">{metrics.network_tx.toFixed(1)} <span className="text-xs font-normal text-slate-400">Mbps</span></p>
+            <div className="grid grid-cols-2 gap-3 my-4">
+              <div className="bg-yellow-50 dark:bg-[#1C1A16] border border-yellow-200 dark:border-[#3C321E] px-3 py-2 rounded-xl flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] text-yellow-600 block uppercase font-bold tracking-wider">CPU使用</span>
+                  <span className="text-xs font-semibold">{metrics.cpu_usage.toFixed(1)}%</span>
                 </div>
               </div>
-
-              {/* Nvidia GPU Details */}
-              {metrics.gpu_details && (
-                <div className="mt-4 pt-4 border-t border-white/5 space-y-3">
-                  <div className="flex justify-between text-xs font-bold text-slate-200">
-                    <span className="flex items-center gap-1.5">
-                      <Cpu size={14} className="text-emerald-400 animate-pulse" /> 
-                      显卡: {metrics.gpu_details.name}
-                    </span>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-4">
-                    {/* GPU Load */}
-                    <div>
-                      <div className="flex justify-between text-[11px] mb-1">
-                        <span className="text-slate-400">GPU 使用率</span>
-                        <span className="font-semibold text-slate-300">{metrics.gpu_details.load}%</span>
-                      </div>
-                      <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                        <div 
-                          className="bg-emerald-400 h-full transition-all duration-500 ease-out" 
-                          style={{ width: `${metrics.gpu_details.load}%` }}
-                        />
-                      </div>
-                    </div>
-                    
-                    {/* GPU VRAM */}
-                    <div>
-                      <div className="flex justify-between text-[11px] mb-1">
-                        <span className="text-slate-400">显存 (VRAM)</span>
-                        <span className="font-semibold text-slate-300">{metrics.gpu_details.memory_percent}%</span>
-                      </div>
-                      <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                        <div 
-                          className="bg-emerald-400 h-full transition-all duration-500 ease-out" 
-                          style={{ width: `${metrics.gpu_details.memory_percent}%` }}
-                        />
-                      </div>
-                      <span className="text-[9px] text-slate-500 mt-0.5 block">
-                        已用: {metrics.gpu_details.memory_used.toFixed(1)} GB / 共 {metrics.gpu_details.memory_total.toFixed(0)} GB
-                      </span>
-                    </div>
-                  </div>
-                  
-                  <div className="flex justify-between text-[10px] text-slate-500">
-                    <span>GPU 温度: <strong className="text-amber-500">{metrics.gpu_details.temperature} °C</strong></span>
-                    <span>监控源: Nvidia NVML</span>
-                  </div>
+              <div className="bg-teal-50 dark:bg-[#161B1C] border border-teal-200 dark:border-[#1E3A3C] px-3 py-2 rounded-xl flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] text-teal-500 block uppercase font-bold tracking-wider">内存占用</span>
+                  <span className="text-xs font-semibold">{metrics.memory_usage.toFixed(1)}%</span>
                 </div>
-            )}
-          </div>
+              </div>
+            </div>
 
-          {/* 禁停区绘制工具栏 */}
-          <div className="mt-4 flex flex-wrap items-center gap-3">
-            {!isDrawing ? (
-              <button
-                type="button"
-                onClick={() => { setIsDrawing(true); setCurrentZonePoints([]); }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-500/20 text-rose-400 border border-rose-500/30 hover:bg-rose-500/30 transition-colors"
-              >
-                <PenTool size={14} /> 绘制禁停区
-              </button>
-            ) : (
-              <>
-                <input
-                  type="text"
-                  value={zoneName}
-                  onChange={e => setZoneName(e.target.value)}
-                  className="bg-slate-900/60 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-slate-200 w-28 outline-none focus:border-blue-500"
-                  placeholder="区域名称"
+            <div className="relative flex flex-col items-center justify-center pt-2">
+              <svg className="w-full max-w-[200px]" viewBox="0 0 100 50">
+                <path d="M10,45 A40,40 0 0,1 90,45" fill="none" stroke="#222328" strokeWidth="6" strokeLinecap="round" />
+                <path 
+                  d="M10,45 A40,40 0 0,1 90,45" 
+                  fill="none" 
+                  stroke="url(#progress-gradient)" 
+                  strokeWidth="6" 
+                  strokeLinecap="round" 
+                  strokeDasharray="126" 
+                  strokeDashoffset={126 - (126 * (metrics.cpu_usage / 100))}
                 />
-                <span className="text-xs text-slate-400">
-                  {currentZonePoints.length} 个顶点
-                  {currentZonePoints.length < 3 ? ' (至少3个)' : ''}
+                <defs>
+                  <linearGradient id="progress-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor="#EA580C" />
+                    <stop offset="50%" stopColor="#CCA43B" />
+                    <stop offset="100%" stopColor="#10B981" />
+                  </linearGradient>
+                </defs>
+              </svg>
+              <div className="absolute top-[48%] flex flex-col items-center">
+                <span className="text-xs font-bold bg-gray-200 dark:bg-[#26272B] px-2.5 py-0.5 rounded-full border border-[var(--color-border-card)] text-[var(--color-text-primary)] shadow-lg">
+                  {metrics.cpu_usage.toFixed(1)}%
                 </span>
-                <button
-                  type="button"
-                  onClick={handleSaveZone}
-                  disabled={currentZonePoints.length < 3}
-                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  <Save size={14} /> 保存
-                </button>
-                <button
-                  type="button"
-                  onClick={handleClearCurrent}
-                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30 transition-colors"
-                >
-                  <X size={14} /> 清空当前
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setIsDrawing(false); setCurrentZonePoints([]); }}
-                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700/30 text-slate-400 border border-slate-500/30 hover:bg-slate-600/30 transition-colors"
-                >
-                  取消绘制
-                </button>
-              </>
-            )}
-            {existingZones.length > 0 && (
-              <button
-                type="button"
-                onClick={handleRemoveAllZones}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20 transition-colors"
-              >
-                <Trash2 size={14} /> 清除全部 ({existingZones.length}个区域)
-              </button>
-            )}
-            {existingZones.length > 0 && !isDrawing && (
-              <span className="text-xs text-slate-500">
-                已配置: {existingZones.map(z => z.name).join(', ')}
-              </span>
-            )}
+              </div>
+              <p className="text-[10px] text-[var(--color-text-secondary)] text-center mt-3 font-medium">
+                {metrics.cpu_details ? `物理 ${metrics.cpu_details.cores_physical} / 逻辑 ${metrics.cpu_details.cores_logical} | ${metrics.cpu_details.frequency_current_mhz} MHz` : 'Waiting for CPU stats'}
+              </p>
+            </div>
           </div>
-        </div>
 
-          {/* 实时硬件历史曲线图 */}
-          <div className="glass-panel rounded-3xl p-5">
-            <h2 className="font-semibold text-lg mb-3">服务器负载趋势</h2>
-            <div className="relative">
-              {metricsHistory.length > 0 ? (
-                renderLineChart(metricsHistory.map(h => h.cpu_usage), '#3b82f6')
+          {/* Realtime Vehicles */}
+          <div className="dashboard-card p-6 flex flex-col justify-between min-h-[300px]">
+            <div className="flex justify-between items-start mb-6">
+              <h3 className="text-sm font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">实时车牌识别 ({platedVehicles.length})</h3>
+              <button className="p-1 rounded-full border border-[var(--color-border-card)] hover:bg-white/5">
+                <Car className="w-4 h-4 text-[var(--color-text-secondary)]" />
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-3 max-h-[220px] overflow-y-auto">
+              {platedVehicles.length === 0 ? (
+                <span className="text-[var(--color-text-muted)] text-xs">暂无识别结果</span>
               ) : (
-                <div className="h-28 flex items-center justify-center text-xs text-slate-500">
-                  收集性能趋势数据中...
+                platedVehicles.map((v, i) => (
+                  <div key={i} className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-2 text-center">
+                    <span className="text-[10px] text-[var(--color-text-secondary)] block uppercase mb-1">{v.class}</span>
+                    <span className="text-sm font-bold text-emerald-400 tracking-wider">{v.plate}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+          
+          {/* Traffic Anomalies/Violations */}
+          <div className="dashboard-card p-6 flex flex-col justify-between max-h-[300px]">
+            <div className="flex justify-between items-start mb-6">
+              <h3 className="text-sm font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">超时滞留告警</h3>
+              <button className="p-1 rounded-full border border-[var(--color-border-card)] hover:bg-white/5">
+                <ShieldAlert className="w-4 h-4 text-rose-400" />
+              </button>
+            </div>
+            <div className="space-y-3 overflow-y-auto pr-2 h-[150px]">
+              {violations.length === 0 ? (
+                <p className="text-[var(--color-text-muted)] text-xs text-center">暂无超时违停</p>
+              ) : (
+                violations.map((v, i) => (
+                  <div key={i} className="flex justify-between items-center bg-rose-500/10 border border-rose-500/20 rounded-xl p-3">
+                    <div>
+                      <strong className="text-xs text-slate-200">ID: {v.vehicle_id}</strong>
+                      <p className="text-[10px] text-[var(--color-text-secondary)] mt-1">{v.zone_name}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-bold text-rose-400">{v.duration.toFixed(0)}s</p>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+        </section>
+
+        {/* ----------------- RIGHT PANEL (8 columns) ----------------- */}
+        <section className="lg:col-span-8 flex flex-col gap-6 w-full">
+          
+          {/* Video Stream Map */}
+          <div className="dashboard-card overflow-hidden relative flex flex-col justify-between" style={{ minHeight: '620px' }}>
+            
+            <div className="absolute top-6 left-6 right-6 z-10 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center bg-white/90 dark:bg-[#1C1C22]/90 backdrop-blur-md border border-[var(--color-border-card)] rounded-full px-4 py-2">
+                <span className={`w-2 h-2 rounded-full mr-3 ${wsStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+                <span className="text-xs font-semibold text-[var(--color-text-primary)]">视频源推流 (FPS: {fps.toFixed(1)})</span>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap bg-white/90 dark:bg-[#1C1C22]/90 backdrop-blur-md border border-[var(--color-border-card)] rounded-full p-1">
+                <button
+                  onClick={() => selectDevice('default')}
+                  className={`text-xs px-3.5 py-1.5 rounded-full font-medium transition-all ${selectedDeviceId === 'default' ? 'bg-gray-800 dark:bg-white text-white dark:text-black font-bold' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}
+                >边端默认</button>
+                {activeSandCameras.map(camera => {
+                  const deviceId = `rtsp_${camera.id}`;
+                  return (
+                    <button
+                      key={camera.id}
+                      onClick={() => selectDevice(deviceId)}
+                      className={`text-xs px-3.5 py-1.5 rounded-full font-medium transition-all ${selectedDeviceId === deviceId ? 'bg-gray-800 dark:bg-white text-white dark:text-black font-bold' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}
+                    >
+                      {camera.id}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="absolute inset-0 bg-gray-100 dark:bg-[#0F1013] overflow-hidden flex items-center justify-center">
+              <div className="relative w-full h-full flex justify-center items-center" onClick={handleCanvasClick} style={{ cursor: isDrawing ? 'crosshair' : 'default' }}>
+                <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block object-contain" />
+                {!hasFrame && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center bg-gray-100 dark:bg-[#0F1013]">
+                    <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+                    <p className="text-[var(--color-text-secondary)] text-sm">等待边缘推流信号源输入...</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Drawing Controls */}
+            <div className="absolute left-6 bottom-6 flex flex-wrap gap-2 z-10 bg-white/90 dark:bg-[#1C1C22]/90 backdrop-blur-md border border-[var(--color-border-card)] px-4 py-3 rounded-2xl">
+              {!isDrawing ? (
+                <button onClick={() => { setIsDrawing(true); setCurrentZonePoints([]); }} className="flex items-center gap-1.5 text-xs font-semibold text-[var(--color-text-primary)] hover:text-emerald-400 transition-colors">
+                  <PenTool size={14} /> 绘制禁停区
+                </button>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <input type="text" value={zoneName} onChange={e => setZoneName(e.target.value)} className="bg-transparent border-b border-[var(--color-border-card)] text-xs text-[var(--color-text-primary)] outline-none focus:border-emerald-400 w-24" placeholder="区域名称" />
+                  <button onClick={handleSaveZone} disabled={currentZonePoints.length < 3} className="text-xs font-bold text-emerald-400 hover:text-emerald-300 disabled:opacity-50">保存</button>
+                  <button onClick={() => { setIsDrawing(false); setCurrentZonePoints([]); }} className="text-xs font-bold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">取消</button>
                 </div>
               )}
-              <div className="flex justify-between text-[10px] text-slate-500 mt-2 px-1">
-                <span>15分钟前</span>
-                <span>当前</span>
-              </div>
+              {existingZones.length > 0 && !isDrawing && (
+                <>
+                  <div className="w-px h-4 bg-white/20 mx-2" />
+                  <button onClick={handleRemoveAllZones} className="flex items-center gap-1.5 text-xs font-semibold text-rose-400 hover:text-rose-300 transition-colors">
+                    <Trash2 size={14} /> 清空 ({existingZones.length})
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
-        </div>
-      </div>
-      
-      {/* 车牌识别结果 */}
-      <div className="glass-panel rounded-3xl p-6">
-        <h3 className="font-semibold text-lg text-emerald-400 mb-4 flex items-center gap-2">
-          <FileText size={20} />
-          实时车牌识别
-          {plateOcrEnabled && (
-            <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full ml-2">已启用</span>
-          )}
-        </h3>
-        {!plateOcrEnabled ? (
-          <div className="text-center py-8">
-            <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center mx-auto mb-3">
-              <FileText size={20} className="text-slate-500" />
+          {/* Anomalies Tracking Board */}
+          <div className="dashboard-card p-6 flex flex-col justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+              <h3 className="text-sm font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">路面抛洒物异常</h3>
             </div>
-            <p className="text-slate-500 text-sm">未启用车牌识别</p>
-            <p className="text-xs text-slate-600 mt-1">请在系统配置中开启 plate_ocr 节点</p>
+            <div className="overflow-x-auto w-full h-[180px]">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-[var(--color-border-card)] text-[var(--color-text-secondary)] font-semibold uppercase tracking-wider">
+                    <th className="pb-3 font-medium">类别</th>
+                    <th className="pb-3 font-medium">坐标</th>
+                    <th className="pb-3 font-medium">置信度</th>
+                    <th className="pb-3 font-medium text-right">状态</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {anomalies.length > 0 ? (
+                    anomalies.map((a, i) => (
+                      <tr key={i} className="group hover:hover:bg-gray-100 dark:hover:bg-[#1C1E24]/40 transition-colors">
+                        <td className="py-4 font-bold flex items-center gap-2 text-[var(--color-text-primary)] capitalize">
+                          <Activity className="w-4 h-4 text-amber-500" />
+                          {a.label}
+                        </td>
+                        <td className="py-4 text-[var(--color-text-secondary)] font-mono">
+                          x:{((a.box[0]+a.box[2])/2).toFixed(0)} y:{a.box[3].toFixed(0)}
+                        </td>
+                        <td className="py-4 font-bold text-amber-500">
+                          {(a.confidence * 100).toFixed(1)}%
+                        </td>
+                        <td className="py-4 text-right">
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold border bg-amber-500/10 text-amber-400 border-amber-500/20">
+                            已上报
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={4} className="py-8 text-center text-[var(--color-text-muted)] font-medium">
+                        当前路面安全，无异常物
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
-        ) : platedVehicles.length === 0 ? (
-          <p className="text-slate-500 text-sm py-4 text-center">等待车牌识别结果...</p>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-            {platedVehicles.map((v, i) => (
-              <div key={i} className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-3 text-center">
-                <span className="text-xs text-slate-400 block mb-1 capitalize">{v.class}</span>
-                <span className="text-sm font-bold text-emerald-400 tracking-wider">{v.plate}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
 
-      {/* 实时预警滚屏 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="glass-panel rounded-3xl p-6">
-          <h3 className="font-semibold text-lg text-rose-500 mb-4 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
-            当前区域超时告警 ({violations.length})
-          </h3>
-          <div className="space-y-3 max-h-56 overflow-y-auto pr-2">
-            {violations.length === 0 ? (
-              <p className="text-slate-500 text-sm py-4 text-center">当前没有区域滞留超时车辆</p>
-            ) : (
-              violations.map((v, i) => (
-                <div key={i} className="flex justify-between items-center bg-rose-500/10 border border-rose-500/20 rounded-xl p-3.5">
-                  <div>
-                    <span className="text-xs bg-rose-500 text-white font-semibold px-2 py-0.5 rounded mr-2">超时</span>
-                    <strong className="text-sm text-slate-200">车辆 ID: {v.vehicle_id}</strong>
-                    <p className="text-xs text-slate-400 mt-1">所在区域: {v.zone_name}</p>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-xs text-slate-400">停留时长</span>
-                    <p className="text-sm font-bold text-rose-400">{v.duration.toFixed(1)} 秒</p>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="glass-panel rounded-3xl p-6">
-          <h3 className="font-semibold text-lg text-amber-500 mb-4 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping" />
-            当前路面障碍与异常 ({anomalies.length})
-          </h3>
-          <div className="space-y-3 max-h-56 overflow-y-auto pr-2">
-            {anomalies.length === 0 ? (
-              <p className="text-slate-500 text-sm py-4 text-center">路面完好，未检测到障碍物/抛洒物</p>
-            ) : (
-              anomalies.map((a, i) => (
-                <div key={i} className="flex justify-between items-center bg-amber-500/10 border border-amber-500/20 rounded-xl p-3.5">
-                  <div>
-                    <span className="text-xs bg-amber-500 text-dark-900 font-semibold px-2 py-0.5 rounded mr-2">异常物</span>
-                    <strong className="text-sm text-slate-200 capitalize">{a.label}</strong>
-                    <p className="text-xs text-slate-400 mt-1">坐标位置: x={((a.box[0] + a.box[2]) / 2).toFixed(0)}, y={a.box[3].toFixed(0)}</p>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-xs text-slate-400">置信度</span>
-                    <p className="text-sm font-bold text-amber-400">{(a.confidence * 100).toFixed(1)}%</p>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
+        </section>
       </div>
-      
     </div>
   );
 }
