@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
+import simpleheat, { type SimpleHeat } from 'simpleheat';
 import { DashboardWebSocket, type FrameMeta } from '../services/ws';
 import { streamAPI, anomalyAPI } from '../services/api';
 import { MapPin, Trash2, Check, RefreshCw, Crosshair, Move, Maximize2, X } from 'lucide-react';
@@ -6,12 +7,87 @@ import roadModelV8 from '../assets/roadModelV8';
 
 interface Point { x: number; y: number }
 interface SandCamera { id: string; name: string; url: string }
+interface HeatmapConfig {
+  radius: number;
+  blur: number;
+  internalScale: number;
+  sampleGridSize: number;
+  animationFps: number;
+  animationShift: number;
+  animationBandHeight: number;
+  intensity: number;
+  decayFactor: number;
+  maxHeat: number;
+  updateInterval: number;
+  opacity: number;
+  minVisibleHeat: number;
+  minSampleValue: number;
+  sampleLifetime: number;
+  trailStep: number;
+  maxSamples: number;
+  smoothingAlpha: number;
+  vehicleTimeout: number;
+}
+
+interface HeatmapVehicleCache {
+  x: number;
+  y: number;
+  lastSeen: number;
+}
+
+interface HeatmapVehiclePosition {
+  id: string;
+  x: number;
+  y: number;
+}
+
+interface HeatmapSample {
+  x: number;
+  y: number;
+  value: number;
+  updatedAt: number;
+}
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
 const ROAD_MODEL = roadModelV8;
 const WORLD_WIDTH = ROAD_MODEL.metadata.extent.width;
 const WORLD_HEIGHT = ROAD_MODEL.metadata.extent.height;
 const WORLD_DISPLAY_SCALE = 1.6;
+const DEFAULT_HEATMAP_CONFIG: HeatmapConfig = {
+  radius: 46,
+  blur: 52,
+  internalScale: 0.66,
+  sampleGridSize: 12,
+  animationFps: 15,
+  animationShift: 5,
+  animationBandHeight: 8,
+  intensity: 0.16,
+  decayFactor: 0.94,
+  maxHeat: 1,
+  updateInterval: 350,
+  opacity: 0.68,
+  minVisibleHeat: 0.1,
+  minSampleValue: 0.018,
+  sampleLifetime: 12000,
+  trailStep: 18,
+  maxSamples: 640,
+  smoothingAlpha: 0.3,
+  vehicleTimeout: 3000,
+};
+const HEATMAP_GRADIENT = {
+  0.18: 'rgba(34, 211, 238, 0.95)',
+  0.36: '#22C55E',
+  0.58: '#FACC15',
+  0.78: '#F97316',
+  1.00: '#EF4444',
+};
+
+const createCanvasElement = (width: number, height: number) => {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
+};
 
 async function ipmRequest(path: string, options: RequestInit = {}) {
   const url = `${API_BASE}${path}`;
@@ -52,7 +128,6 @@ export default function IPMCalibration() {
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [currentVehicles, setCurrentVehicles] = useState<any[]>([]);
   const [transformedVehicles, setTransformedVehicles] = useState<any[]>([]);
-  const [heatmapPoints, setHeatmapPoints] = useState<Point[]>([]);
   const [sandCameras, setSandCameras] = useState<SandCamera[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('default');
   const [activeRtspDevices, setActiveRtspDevices] = useState<string[]>([]);
@@ -62,12 +137,21 @@ export default function IPMCalibration() {
   const [isContinuousHeatmapRendering, setIsContinuousHeatmapRendering] = useState(false);
   const vehicleDotsRef = useRef<any[]>([]);
   vehicleDotsRef.current = transformedVehicles;
-  const heatmapPointsRef = useRef<Point[]>([]);
-  heatmapPointsRef.current = heatmapPoints;
 
   const cameraCanvasRef = useRef<HTMLCanvasElement>(null);
   const worldCanvasRef = useRef<HTMLCanvasElement>(null);
   const fullscreenWorldCanvasRef = useRef<HTMLCanvasElement>(null);
+  const roadBaseCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const heatmapColorRef = useRef<HTMLCanvasElement | null>(null);
+  const heatmapAnimatedRef = useRef<HTMLCanvasElement | null>(null);
+  const heatmapRendererRef = useRef<SimpleHeat | null>(null);
+  const heatmapSamplesRef = useRef<HeatmapSample[]>([]);
+  const heatmapVehicleCacheRef = useRef<Map<string, HeatmapVehicleCache>>(new Map());
+  const heatmapLastUpdateRef = useRef(Date.now());
+  const heatmapRenderBusyRef = useRef(false);
+  const heatmapVisibleRef = useRef(false);
+  const heatmapAnimationFrameRef = useRef<number | null>(null);
+  const heatmapLastAnimationRef = useRef(0);
   const worldScrollRef = useRef<HTMLDivElement>(null);
   const fullscreenWorldScrollRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<string | null>(null);
@@ -130,12 +214,24 @@ export default function IPMCalibration() {
 
   const normalizeDeviceId = (deviceId?: string) => deviceId?.startsWith('rtsp_') ? deviceId : 'default';
 
+  const clearHeatmapBuffers = useCallback(() => {
+    for (const canvas of [heatmapColorRef.current, heatmapAnimatedRef.current]) {
+      const ctx = canvas?.getContext('2d');
+      if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    heatmapRendererRef.current?.clear();
+    heatmapSamplesRef.current = [];
+    heatmapVehicleCacheRef.current.clear();
+    heatmapLastUpdateRef.current = Date.now();
+    heatmapVisibleRef.current = false;
+  }, []);
+
   const clearCameraMarks = useCallback(() => {
     setCameraPoints([]);
     setTransformedVehicles([]);
-    setHeatmapPoints([]);
     setIsContinuousHeatmapRendering(false);
-  }, []);
+    clearHeatmapBuffers();
+  }, [clearHeatmapBuffers]);
 
   const selectDevice = (deviceId: string) => {
     if (selectedDeviceRef.current !== deviceId) clearCameraMarks();
@@ -475,6 +571,16 @@ export default function IPMCalibration() {
     ctx.restore();
   };
 
+  const getRoadBaseCanvas = () => {
+    if (!roadBaseCanvasRef.current) {
+      const baseCanvas = createCanvasElement(WORLD_WIDTH, WORLD_HEIGHT);
+      const baseCtx = baseCanvas.getContext('2d');
+      if (baseCtx) drawRoadModelBackground(baseCtx, WORLD_WIDTH, WORLD_HEIGHT);
+      roadBaseCanvasRef.current = baseCanvas;
+    }
+    return roadBaseCanvasRef.current;
+  };
+
   const drawWorldCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -482,151 +588,37 @@ export default function IPMCalibration() {
 
     const cw = canvas.width || WORLD_WIDTH;
     const ch = canvas.height || WORLD_HEIGHT;
-    drawRoadModelBackground(ctx, cw, ch);
+    const roadBase = getRoadBaseCanvas();
+    if (roadBase) {
+      ctx.clearRect(0, 0, cw, ch);
+      ctx.drawImage(roadBase, 0, 0, cw, ch);
+    } else {
+      drawRoadModelBackground(ctx, cw, ch);
+    }
 
-    const heatPoints = heatmapPointsRef.current;
-    if (heatPoints.length > 0) {
-      const densityCanvas = document.createElement('canvas');
-      densityCanvas.width = cw;
-      densityCanvas.height = ch;
-      const densityCtx = densityCanvas.getContext('2d');
-
-      if (densityCtx) {
-        const radius = 72;
-        const canvasPoints = heatPoints.map(point => ({
-          x: point.x / WORLD_WIDTH * cw,
-          y: point.y / WORLD_HEIGHT * ch,
-        }));
-
-        densityCtx.clearRect(0, 0, cw, ch);
-        densityCtx.globalCompositeOperation = 'lighter';
-        densityCtx.lineCap = 'round';
-        densityCtx.lineJoin = 'round';
-
-        const overlapDistance = radius * 2;
-        for (let i = 0; i < canvasPoints.length; i++) {
-          for (let j = i + 1; j < canvasPoints.length; j++) {
-            const a = canvasPoints[i];
-            const b = canvasPoints[j];
-            const distance = Math.hypot(a.x - b.x, a.y - b.y);
-            if (distance > overlapDistance) continue;
-            const strength = Math.max(0, 1 - distance / overlapDistance);
-            const nx = -(b.y - a.y) / distance;
-            const ny = (b.x - a.x) / distance;
-            const bend = (((i + j) % 2 === 0) ? 1 : -1) * Math.min(radius * 0.46, distance * 0.2);
-            const control = {
-              x: (a.x + b.x) / 2 + nx * bend,
-              y: (a.y + b.y) / 2 + ny * bend,
-            };
-            const curvePoint = (t: number) => {
-              const inv = 1 - t;
-              const wave = Math.sin(t * Math.PI * 2 + (i + j) * 0.9) * radius * 0.035 * strength;
-              return {
-                x: inv * inv * a.x + 2 * inv * t * control.x + t * t * b.x + nx * wave,
-                y: inv * inv * a.y + 2 * inv * t * control.y + t * t * b.y + ny * wave,
-              };
-            };
-
-            const segments = 18;
-            const bridgeLayers = [
-              { baseWidth: radius * (0.68 + strength * 0.16), centerCut: radius * 0.2, baseAlpha: 0.1 + strength * 0.18, centerAlpha: 0.2 },
-              { baseWidth: radius * (0.34 + strength * 0.12), centerCut: radius * 0.16, baseAlpha: 0.2 + strength * 0.28, centerAlpha: 0.34 },
-              { baseWidth: radius * (0.18 + strength * 0.08), centerCut: radius * 0.1, baseAlpha: 0.42 + strength * 0.28, centerAlpha: 0.32 },
-            ];
-            for (const layer of bridgeLayers) {
-              for (let step = 0; step < segments; step++) {
-                const t0 = step / segments;
-                const t1 = (step + 1) / segments;
-                const midT = (t0 + t1) / 2;
-                const centerFocus = Math.sin(midT * Math.PI);
-                const from = curvePoint(t0);
-                const to = curvePoint(t1);
-                densityCtx.strokeStyle = `rgba(255, 255, 255, ${layer.baseAlpha + centerFocus * layer.centerAlpha})`;
-                densityCtx.lineWidth = Math.max(radius * 0.08, layer.baseWidth - centerFocus * layer.centerCut);
-                densityCtx.beginPath();
-                densityCtx.moveTo(from.x, from.y);
-                densityCtx.lineTo(to.x, to.y);
-                densityCtx.stroke();
-              }
-            }
-          }
-        }
-
-        for (const point of canvasPoints) {
-          const gradient = densityCtx.createRadialGradient(point.x, point.y, 0, point.x, point.y, radius);
-          gradient.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
-          gradient.addColorStop(0.2, 'rgba(255, 255, 255, 0.68)');
-          gradient.addColorStop(0.46, 'rgba(255, 255, 255, 0.32)');
-          gradient.addColorStop(0.76, 'rgba(255, 255, 255, 0.11)');
-          gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-          densityCtx.fillStyle = gradient;
-          densityCtx.beginPath();
-          densityCtx.arc(point.x, point.y, radius, 0, Math.PI * 2);
-          densityCtx.fill();
-        }
-
-        const density = densityCtx.getImageData(0, 0, cw, ch);
-        const colored = ctx.createImageData(cw, ch);
-        const ramp = [
-          { stop: 0.00, color: [255, 244, 189] },
-          { stop: 0.14, color: [255, 214, 84] },
-          { stop: 0.31, color: [255, 139, 31] },
-          { stop: 0.48, color: [239, 57, 45] },
-          { stop: 0.72, color: [177, 24, 37] },
-          { stop: 1.00, color: [112, 18, 32] },
-        ];
-        const sampleRamp = (value: number) => {
-          const t = Math.max(0, Math.min(1, value));
-          for (let i = 0; i < ramp.length - 1; i++) {
-            const left = ramp[i];
-            const right = ramp[i + 1];
-            if (t < left.stop || t > right.stop) continue;
-            const local = (t - left.stop) / (right.stop - left.stop || 1);
-            return [
-              left.color[0] + (right.color[0] - left.color[0]) * local,
-              left.color[1] + (right.color[1] - left.color[1]) * local,
-              left.color[2] + (right.color[2] - left.color[2]) * local,
-            ];
-          }
-          return ramp[ramp.length - 1].color;
-        };
-
-        for (let i = 0; i < density.data.length; i += 4) {
-          const alpha = density.data[i + 3];
-          if (alpha < 8) continue;
-          const intensity = Math.min(1, alpha / 172);
-          const [r, g, b] = sampleRamp(intensity);
-          colored.data[i] = r;
-          colored.data[i + 1] = g;
-          colored.data[i + 2] = b;
-          colored.data[i + 3] = Math.min(178, 42 + intensity * 132);
-        }
-
-        const coloredCanvas = document.createElement('canvas');
-        coloredCanvas.width = cw;
-        coloredCanvas.height = ch;
-        const coloredCtx = coloredCanvas.getContext('2d');
-        if (coloredCtx) {
-          coloredCtx.putImageData(colored, 0, 0);
-          ctx.save();
-          ctx.globalCompositeOperation = 'source-over';
-          ctx.globalAlpha = 0.82;
-          ctx.drawImage(coloredCanvas, 0, 0);
-          ctx.restore();
-        }
-      }
+    const heatmapCanvas = heatmapAnimatedRef.current || heatmapColorRef.current;
+    if (heatmapCanvas) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = DEFAULT_HEATMAP_CONFIG.opacity;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(heatmapCanvas, 0, 0, cw, ch);
+      ctx.restore();
     }
 
     drawPoints(ctx, worldPtsRef.current, 0, 0, cw, ch, WORLD_WIDTH, WORLD_HEIGHT);
-    for (const v of vehicleDotsRef.current) {
-      if (!v.world) continue;
-      const px = v.world[0] / WORLD_WIDTH * cw;
-      const py = v.world[1] / WORLD_HEIGHT * ch;
-      ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.8)'; ctx.fill();
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(`#${v.id || '?'}`, px, py - 12);
+    if (!heatmapVisibleRef.current) {
+      for (const v of vehicleDotsRef.current) {
+        if (!v.world) continue;
+        const px = v.world[0] / WORLD_WIDTH * cw;
+        const py = v.world[1] / WORLD_HEIGHT * ch;
+        ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.8)'; ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(`#${v.id || '?'}`, px, py - 12);
+      }
     }
   }, []);
 
@@ -683,7 +675,7 @@ export default function IPMCalibration() {
 
     canvases.forEach(setupCanvas);
     return () => { observers.forEach(ro => ro.disconnect()); };
-  }, [worldPoints, transformedVehicles, heatmapPoints, isWorldFullscreen, drawWorldCanvas]);
+  }, [worldPoints, transformedVehicles, isWorldFullscreen, drawWorldCanvas]);
 
   useEffect(() => {
     if (!isWorldFullscreen) return;
@@ -820,8 +812,16 @@ export default function IPMCalibration() {
   };
 
   const doTransform = useCallback(async () => {
-    if (!laneId || currentVehicles.length === 0) { setTransformedVehicles([]); return []; }
-    if (cameraPoints.length < 3) { setTransformedVehicles([]); return []; }
+    if (!laneId || currentVehicles.length === 0) {
+      vehicleDotsRef.current = [];
+      setTransformedVehicles([]);
+      return [];
+    }
+    if (cameraPoints.length < 3) {
+      vehicleDotsRef.current = [];
+      setTransformedVehicles([]);
+      return [];
+    }
 
     const vehiclesInCalibrationArea = currentVehicles
       .map((vehicle: any) => {
@@ -836,7 +836,11 @@ export default function IPMCalibration() {
       })
       .filter((item): item is { vehicle: any; cameraPoint: Point } => Boolean(item));
 
-    if (vehiclesInCalibrationArea.length === 0) { setTransformedVehicles([]); return []; }
+    if (vehiclesInCalibrationArea.length === 0) {
+      vehicleDotsRef.current = [];
+      setTransformedVehicles([]);
+      return [];
+    }
 
     const points = vehiclesInCalibrationArea.map(({ cameraPoint }) => [cameraPoint.x, cameraPoint.y]);
     try {
@@ -852,27 +856,245 @@ export default function IPMCalibration() {
           camera: points[i],
           world: transformed[i] || null,
         }));
+        vehicleDotsRef.current = nextVehicles;
         setTransformedVehicles(nextVehicles);
         return nextVehicles;
       } else {
+        vehicleDotsRef.current = [];
         setTransformedVehicles([]);
         return [];
       }
-    } catch { setTransformedVehicles([]); return []; }
+    } catch {
+      vehicleDotsRef.current = [];
+      setTransformedVehicles([]);
+      return [];
+    }
   }, [cameraId, laneId, currentVehicles, cameraPoints]);
 
   const toggleContinuousTransform = () => {
     setIsContinuousTransforming(prev => !prev);
   };
 
+  const redrawWorldCanvases = useCallback(() => {
+    drawWorldCanvas(worldCanvasRef.current);
+    drawWorldCanvas(fullscreenWorldCanvasRef.current);
+  }, [drawWorldCanvas]);
+
+  const renderAnimatedHeatmapLayer = useCallback((time: number) => {
+    const source = heatmapColorRef.current;
+    if (!source) return;
+    if (
+      !heatmapAnimatedRef.current
+      || heatmapAnimatedRef.current.width !== source.width
+      || heatmapAnimatedRef.current.height !== source.height
+    ) {
+      heatmapAnimatedRef.current = createCanvasElement(source.width, source.height);
+    }
+    const animated = heatmapAnimatedRef.current;
+    const ctx = animated.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, animated.width, animated.height);
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.imageSmoothingEnabled = true;
+    ctx.filter = 'blur(0.45px) saturate(1.06)';
+
+    const bandHeight = Math.max(3, Math.round(DEFAULT_HEATMAP_CONFIG.animationBandHeight * DEFAULT_HEATMAP_CONFIG.internalScale));
+    const shift = DEFAULT_HEATMAP_CONFIG.animationShift * DEFAULT_HEATMAP_CONFIG.internalScale;
+    const phase = time * 0.001;
+    for (let y = 0; y < source.height; y += bandHeight) {
+      const height = Math.min(bandHeight + 2, source.height - y);
+      const edgeWave = Math.sin(y * 0.036 + phase * 2.1) + Math.sin(y * 0.017 - phase * 1.45) * 0.55;
+      const dx = edgeWave * shift;
+      const dy = Math.sin(y * 0.029 + phase * 1.7) * 1.2 - Math.max(0, 1 - y / source.height) * 1.5;
+      const stretch = 1 + Math.sin(y * 0.022 - phase * 1.2) * 0.006;
+      ctx.drawImage(source, 0, y, source.width, height, dx, y + dy, source.width * stretch, height + 1);
+    }
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.1 + (Math.sin(phase * 2.4) + 1) * 0.025;
+    ctx.filter = 'blur(2px)';
+    for (let y = 0; y < source.height; y += bandHeight * 2) {
+      const height = Math.min(bandHeight * 2, source.height - y);
+      const dx = Math.cos(y * 0.021 + phase * 1.6) * shift * 0.55;
+      const dy = Math.sin(y * 0.018 - phase * 1.9) * 1.6 - 1;
+      ctx.drawImage(source, 0, y, source.width, height, dx, y + dy, source.width, height);
+    }
+    ctx.restore();
+  }, []);
+
+  const ensureHeatmapCanvases = useCallback(() => {
+    const heatWidth = Math.max(1, Math.round(WORLD_WIDTH * DEFAULT_HEATMAP_CONFIG.internalScale));
+    const heatHeight = Math.max(1, Math.round(WORLD_HEIGHT * DEFAULT_HEATMAP_CONFIG.internalScale));
+    if (
+      !heatmapColorRef.current
+      || heatmapColorRef.current.width !== heatWidth
+      || heatmapColorRef.current.height !== heatHeight
+    ) {
+      heatmapColorRef.current = createCanvasElement(heatWidth, heatHeight);
+      heatmapAnimatedRef.current = createCanvasElement(heatWidth, heatHeight);
+      heatmapRendererRef.current = null;
+    }
+    if (
+      !heatmapAnimatedRef.current
+      || heatmapAnimatedRef.current.width !== heatWidth
+      || heatmapAnimatedRef.current.height !== heatHeight
+    ) {
+      heatmapAnimatedRef.current = createCanvasElement(heatWidth, heatHeight);
+    }
+    if (!heatmapRendererRef.current) {
+      heatmapRendererRef.current = simpleheat(heatmapColorRef.current)
+        .radius(
+          Math.max(1, DEFAULT_HEATMAP_CONFIG.radius * DEFAULT_HEATMAP_CONFIG.internalScale),
+          Math.max(1, DEFAULT_HEATMAP_CONFIG.blur * DEFAULT_HEATMAP_CONFIG.internalScale),
+        )
+        .gradient(HEATMAP_GRADIENT)
+        .max(DEFAULT_HEATMAP_CONFIG.maxHeat);
+    }
+    return {
+      canvas: heatmapColorRef.current,
+      renderer: heatmapRendererRef.current,
+    };
+  }, []);
+
+  const getValidHeatmapVehicles = (vehicles: any[]) => {
+    const deduped = new Map<string, HeatmapVehiclePosition>();
+    vehicles.forEach((vehicle, index) => {
+      if (!Array.isArray(vehicle.world) || vehicle.world.length < 2) return;
+      const [worldX, worldY] = vehicle.world;
+      if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) return;
+      if (worldX < 0 || worldY < 0 || worldX > WORLD_WIDTH || worldY > WORLD_HEIGHT) return;
+      const id = String(vehicle.id ?? `${vehicle.class || 'vehicle'}-${index}`);
+      deduped.set(id, { id, x: worldX, y: worldY });
+    });
+    return [...deduped.values()];
+  };
+
+  const compactHeatmapSamples = (samples: HeatmapSample[]) => {
+    const gridSize = DEFAULT_HEATMAP_CONFIG.sampleGridSize;
+    const buckets = new Map<string, { x: number; y: number; value: number; updatedAt: number }>();
+
+    for (const sample of samples) {
+      const gx = Math.round(sample.x / gridSize);
+      const gy = Math.round(sample.y / gridSize);
+      const key = `${gx}:${gy}`;
+      const current = buckets.get(key);
+      if (!current) {
+        buckets.set(key, { ...sample });
+        continue;
+      }
+
+      const nextValue = Math.min(DEFAULT_HEATMAP_CONFIG.maxHeat, current.value + sample.value);
+      const weight = current.value + sample.value || 1;
+      current.x = (current.x * current.value + sample.x * sample.value) / weight;
+      current.y = (current.y * current.value + sample.y * sample.value) / weight;
+      current.value = nextValue;
+      current.updatedAt = Math.max(current.updatedAt, sample.updatedAt);
+    }
+
+    return [...buckets.values()];
+  };
+
+  const updateHeatmapLayer = useCallback((vehicles: any[]) => {
+    const { canvas, renderer } = ensureHeatmapCanvases();
+    if (canvas.width === 0 || canvas.height === 0) return;
+
+    const now = Date.now();
+    const elapsedSteps = Math.max(1, (now - heatmapLastUpdateRef.current) / DEFAULT_HEATMAP_CONFIG.updateInterval);
+    const decay = DEFAULT_HEATMAP_CONFIG.decayFactor ** elapsedSteps;
+    heatmapSamplesRef.current = heatmapSamplesRef.current
+      .map(sample => ({ ...sample, value: sample.value * decay }))
+      .filter(sample => sample.value >= DEFAULT_HEATMAP_CONFIG.minSampleValue && now - sample.updatedAt <= DEFAULT_HEATMAP_CONFIG.sampleLifetime);
+    heatmapLastUpdateRef.current = now;
+
+    const validVehicles = getValidHeatmapVehicles(vehicles);
+    const nextSamples = heatmapSamplesRef.current;
+
+    for (const vehicle of validVehicles) {
+      const previous = heatmapVehicleCacheRef.current.get(vehicle.id);
+      const alpha = DEFAULT_HEATMAP_CONFIG.smoothingAlpha;
+      const x = previous ? alpha * vehicle.x + (1 - alpha) * previous.x : vehicle.x;
+      const y = previous ? alpha * vehicle.y + (1 - alpha) * previous.y : vehicle.y;
+      const distance = previous ? Math.hypot(x - previous.x, y - previous.y) : 0;
+      const steps = previous ? Math.max(1, Math.ceil(distance / DEFAULT_HEATMAP_CONFIG.trailStep)) : 1;
+
+      for (let step = 1; step <= steps; step++) {
+        const t = step / steps;
+        const px = previous ? previous.x + (x - previous.x) * t : x;
+        const py = previous ? previous.y + (y - previous.y) * t : y;
+        const trailWeight = previous && step < steps ? 0.62 : 1;
+        nextSamples.push({
+          x: px,
+          y: py,
+          value: Math.min(DEFAULT_HEATMAP_CONFIG.maxHeat, DEFAULT_HEATMAP_CONFIG.intensity * trailWeight),
+          updatedAt: now,
+        });
+      }
+
+      heatmapVehicleCacheRef.current.set(vehicle.id, { x, y, lastSeen: now });
+    }
+
+    for (const [id, cache] of heatmapVehicleCacheRef.current) {
+      if (now - cache.lastSeen > DEFAULT_HEATMAP_CONFIG.vehicleTimeout) {
+        heatmapVehicleCacheRef.current.delete(id);
+      }
+    }
+
+    const compactedSamples = compactHeatmapSamples(nextSamples);
+    if (compactedSamples.length > DEFAULT_HEATMAP_CONFIG.maxSamples) {
+      compactedSamples.splice(0, compactedSamples.length - DEFAULT_HEATMAP_CONFIG.maxSamples);
+    }
+    heatmapSamplesRef.current = compactedSamples;
+
+    renderer
+      .data(compactedSamples.map(sample => [
+        sample.x * DEFAULT_HEATMAP_CONFIG.internalScale,
+        sample.y * DEFAULT_HEATMAP_CONFIG.internalScale,
+        Math.min(DEFAULT_HEATMAP_CONFIG.maxHeat, sample.value),
+      ]))
+      .max(DEFAULT_HEATMAP_CONFIG.maxHeat)
+      .draw(DEFAULT_HEATMAP_CONFIG.minVisibleHeat);
+    heatmapVisibleRef.current = compactedSamples.length > 0;
+    renderAnimatedHeatmapLayer(performance.now());
+    redrawWorldCanvases();
+  }, [ensureHeatmapCanvases, redrawWorldCanvases, renderAnimatedHeatmapLayer]);
+
   const renderHeatmapOnce = useCallback(async () => {
-    const transformed = await doTransform();
-    setHeatmapPoints(
-      transformed
-        .filter((vehicle: any) => Array.isArray(vehicle.world))
-        .map((vehicle: any) => ({ x: vehicle.world[0], y: vehicle.world[1] }))
-    );
-  }, [doTransform]);
+    if (heatmapRenderBusyRef.current) return;
+    heatmapRenderBusyRef.current = true;
+    try {
+      const transformed = await doTransform();
+      updateHeatmapLayer(transformed);
+    } finally {
+      heatmapRenderBusyRef.current = false;
+    }
+  }, [doTransform, updateHeatmapLayer]);
+
+  useEffect(() => {
+    let stopped = false;
+    const frameInterval = 1000 / DEFAULT_HEATMAP_CONFIG.animationFps;
+
+    const animateHeatmap = (time: number) => {
+      if (stopped) return;
+      if (heatmapVisibleRef.current && time - heatmapLastAnimationRef.current >= frameInterval) {
+        heatmapLastAnimationRef.current = time;
+        renderAnimatedHeatmapLayer(time);
+        redrawWorldCanvases();
+      }
+      heatmapAnimationFrameRef.current = requestAnimationFrame(animateHeatmap);
+    };
+
+    heatmapAnimationFrameRef.current = requestAnimationFrame(animateHeatmap);
+    return () => {
+      stopped = true;
+      if (heatmapAnimationFrameRef.current !== null) {
+        cancelAnimationFrame(heatmapAnimationFrameRef.current);
+      }
+    };
+  }, [redrawWorldCanvases, renderAnimatedHeatmapLayer]);
 
   const toggleContinuousHeatmapRendering = () => {
     setIsContinuousHeatmapRendering(prev => !prev);
@@ -889,7 +1111,7 @@ export default function IPMCalibration() {
   useEffect(() => {
     if (!isContinuousHeatmapRendering) return;
     renderHeatmapOnce();
-    const t = setInterval(() => renderHeatmapOnce(), 1000);
+    const t = setInterval(() => renderHeatmapOnce(), DEFAULT_HEATMAP_CONFIG.updateInterval);
     return () => clearInterval(t);
   }, [renderHeatmapOnce, isContinuousHeatmapRendering]);
 
