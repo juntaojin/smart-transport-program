@@ -290,25 +290,22 @@ export default function IPMCalibration() {
     const drawRoadArrow = (x: number, y: number, angle: number, size: number) => {
       const px = x * sx;
       const py = y * sy;
-      const arrowSize = size * scale;
+      const arrowSize = Math.max(16, size * 1.45 * scale);
 
       ctx.save();
       ctx.translate(px, py);
       ctx.rotate((angle * Math.PI) / 180);
-      ctx.beginPath();
-      ctx.moveTo(arrowSize, 0);
-      ctx.lineTo(-arrowSize * 0.72, -arrowSize * 0.52);
-      ctx.lineTo(-arrowSize * 0.32, 0);
-      ctx.lineTo(-arrowSize * 0.72, arrowSize * 0.52);
-      ctx.closePath();
+      ctx.font = `700 ${arrowSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = Math.max(3, arrowSize * 0.16);
+      ctx.strokeStyle = 'rgba(2, 6, 23, 0.92)';
       ctx.fillStyle = 'rgba(248, 250, 252, 0.96)';
       ctx.shadowColor = 'rgba(2, 6, 23, 0.65)';
       ctx.shadowBlur = 4 * scale;
-      ctx.fill();
+      ctx.strokeText('->', 0, 0);
+      ctx.fillText('->', 0, 0);
       ctx.shadowBlur = 0;
-      ctx.strokeStyle = 'rgba(15, 23, 42, 0.92)';
-      ctx.lineWidth = Math.max(1, 1.4 * scale);
-      ctx.stroke();
       ctx.restore();
     };
     const drawCrosswalk = (points: [number, number][], width: number, stripeCount: number) => {
@@ -319,36 +316,33 @@ export default function IPMCalibration() {
       const length = Math.hypot(dx, dy);
       if (!length) return;
 
-      const ux = dx / length;
-      const uy = dy / length;
-      const stripeWidth = width / Math.max(3, stripeCount);
-      const stripeLength = width * 0.72;
-      const nx = -uy;
-      const ny = ux;
+      const nx = -dy / length;
+      const ny = dx / length;
+      const stripeLength = width;
 
       ctx.save();
-      ctx.fillStyle = 'rgba(248, 250, 252, 0.92)';
-      ctx.strokeStyle = 'rgba(15, 23, 42, 0.38)';
-      ctx.lineWidth = Math.max(0.8, scale);
+      ctx.lineCap = 'butt';
       for (let i = 0; i < stripeCount; i++) {
-        const t = (i + 0.5) / stripeCount;
-        const cx = a[0] + dx * t;
-        const cy = a[1] + dy * t;
-        const halfW = stripeWidth * 0.35;
-        const halfL = stripeLength * 0.5;
-        const corners: [number, number][] = [
-          [cx - ux * halfW - nx * halfL, cy - uy * halfW - ny * halfL],
-          [cx + ux * halfW - nx * halfL, cy + uy * halfW - ny * halfL],
-          [cx + ux * halfW + nx * halfL, cy + uy * halfW + ny * halfL],
-          [cx - ux * halfW + nx * halfL, cy - uy * halfW + ny * halfL],
-        ];
+        const t = stripeCount === 1 ? 0.5 : i / (stripeCount - 1);
+        const x = a[0] + dx * t;
+        const y = a[1] + dy * t;
+        const x1 = (x - nx * stripeLength / 2) * sx;
+        const y1 = (y - ny * stripeLength / 2) * sy;
+        const x2 = (x + nx * stripeLength / 2) * sx;
+        const y2 = (y + ny * stripeLength / 2) * sy;
+
         ctx.beginPath();
-        corners.forEach((point, index) => {
-          const [px, py] = toCanvas(point);
-          if (index === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-        });
-        ctx.closePath();
-        ctx.fill();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.strokeStyle = 'rgba(2, 6, 23, 0.92)';
+        ctx.lineWidth = Math.max(5, 7 * scale);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.strokeStyle = 'rgba(248, 250, 252, 0.96)';
+        ctx.lineWidth = Math.max(4, 5 * scale);
         ctx.stroke();
       }
       ctx.restore();
@@ -371,25 +365,17 @@ export default function IPMCalibration() {
       const points = road.centerline;
       if (!points || points.length < 2) continue;
 
-      const roadWidth = Math.max(22, road.lanes * 18) * scale;
       drawPolyline(points);
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      ctx.strokeStyle = 'rgba(2, 6, 23, 0.92)';
-      ctx.lineWidth = roadWidth + 7 * scale;
+      ctx.strokeStyle = 'rgba(226, 232, 240, 0.42)';
+      ctx.lineWidth = Math.max(6, 8 * scale);
       ctx.stroke();
 
       drawPolyline(points);
-      ctx.strokeStyle = 'rgba(148, 163, 184, 0.88)';
-      ctx.lineWidth = roadWidth;
+      ctx.strokeStyle = 'rgba(37, 99, 235, 0.98)';
+      ctx.lineWidth = Math.max(3, 4 * scale);
       ctx.stroke();
-
-      drawPolyline(points);
-      ctx.strokeStyle = 'rgba(226, 232, 240, 0.30)';
-      ctx.lineWidth = Math.max(1.6, 2.2 * scale);
-      ctx.setLineDash([10 * scale, 14 * scale]);
-      ctx.stroke();
-      ctx.setLineDash([]);
     }
 
     for (const crosswalk of ROAD_MODEL.crosswalks) {
@@ -403,7 +389,7 @@ export default function IPMCalibration() {
       ctx.lineJoin = 'round';
       ctx.strokeStyle = marking.style === 'solid'
         ? 'rgba(250, 204, 21, 0.96)'
-        : 'rgba(248, 250, 252, 0.86)';
+        : 'rgba(250, 204, 21, 0.86)';
       ctx.lineWidth = Math.max(2, 3 * scale);
       ctx.setLineDash(marking.style === 'dashed' ? [16 * scale, 14 * scale] : []);
       ctx.stroke();
