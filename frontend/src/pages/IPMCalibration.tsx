@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { DashboardWebSocket, type FrameMeta } from '../services/ws';
 import { streamAPI, anomalyAPI } from '../services/api';
-import { MapPin, Trash2, Check, RefreshCw, Crosshair, Move } from 'lucide-react';
+import { MapPin, Trash2, Check, RefreshCw, Crosshair, Move, Maximize2, X } from 'lucide-react';
 import roadModelV8 from '../assets/roadModelV8';
 
 interface Point { x: number; y: number }
@@ -52,20 +52,31 @@ export default function IPMCalibration() {
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [currentVehicles, setCurrentVehicles] = useState<any[]>([]);
   const [transformedVehicles, setTransformedVehicles] = useState<any[]>([]);
+  const [heatmapPoints, setHeatmapPoints] = useState<Point[]>([]);
   const [sandCameras, setSandCameras] = useState<SandCamera[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('default');
   const [activeRtspDevices, setActiveRtspDevices] = useState<string[]>([]);
   const [videoAspectRatio, setVideoAspectRatio] = useState('16 / 9');
+  const [isWorldFullscreen, setIsWorldFullscreen] = useState(false);
+  const [isContinuousTransforming, setIsContinuousTransforming] = useState(false);
+  const [isContinuousHeatmapRendering, setIsContinuousHeatmapRendering] = useState(false);
   const vehicleDotsRef = useRef<any[]>([]);
   vehicleDotsRef.current = transformedVehicles;
+  const heatmapPointsRef = useRef<Point[]>([]);
+  heatmapPointsRef.current = heatmapPoints;
 
   const cameraCanvasRef = useRef<HTMLCanvasElement>(null);
   const worldCanvasRef = useRef<HTMLCanvasElement>(null);
+  const fullscreenWorldCanvasRef = useRef<HTMLCanvasElement>(null);
+  const worldScrollRef = useRef<HTMLDivElement>(null);
+  const fullscreenWorldScrollRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<string | null>(null);
   const selectedDeviceRef = useRef(selectedDeviceId);
   selectedDeviceRef.current = selectedDeviceId;
   const frameUrlsRef = useRef<Record<string, string>>({});
   const payloadsRef = useRef<Record<string, any>>({});
+  const lastFrameAtRef = useRef<Record<string, number>>({});
+  const rtspStreamIdentityRef = useRef<Record<string, string>>({});
   const wsRef = useRef<DashboardWebSocket | null>(null);
   const camSizeRef = useRef({ w: 0, h: 0 });
   const videoAspectRatioRef = useRef(videoAspectRatio);
@@ -119,7 +130,15 @@ export default function IPMCalibration() {
 
   const normalizeDeviceId = (deviceId?: string) => deviceId?.startsWith('rtsp_') ? deviceId : 'default';
 
+  const clearCameraMarks = useCallback(() => {
+    setCameraPoints([]);
+    setTransformedVehicles([]);
+    setHeatmapPoints([]);
+    setIsContinuousHeatmapRendering(false);
+  }, []);
+
   const selectDevice = (deviceId: string) => {
+    if (selectedDeviceRef.current !== deviceId) clearCameraMarks();
     if (deviceId.startsWith("rtsp_")) anomalyAPI.reset(deviceId).catch(() => {});
     setSelectedDeviceId(deviceId);
     frameRef.current = frameUrlsRef.current[deviceId] || null;
@@ -147,6 +166,8 @@ export default function IPMCalibration() {
           if (deviceId.startsWith('rtsp_') && !activeSet.has(deviceId)) {
             if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url);
             delete frameUrlsRef.current[deviceId];
+            delete lastFrameAtRef.current[deviceId];
+            delete rtspStreamIdentityRef.current[deviceId];
           }
         }
         for (const deviceId of Object.keys(payloadsRef.current)) {
@@ -154,6 +175,17 @@ export default function IPMCalibration() {
         }
 
         setActiveRtspDevices(activeIds);
+
+        for (const [deviceId, info] of Object.entries(res.data)) {
+          if (!deviceId.startsWith('rtsp_')) continue;
+          const streamInfo = info as any;
+          const nextIdentity = [streamInfo?.url, streamInfo?.camera_id, streamInfo?.camera_name].filter(Boolean).join('|');
+          const previousIdentity = rtspStreamIdentityRef.current[deviceId];
+          if (nextIdentity && previousIdentity && nextIdentity !== previousIdentity && selectedDeviceRef.current === deviceId) {
+            clearCameraMarks();
+          }
+          if (nextIdentity) rtspStreamIdentityRef.current[deviceId] = nextIdentity;
+        }
 
         if (selectedDeviceRef.current.startsWith('rtsp_') && !activeSet.has(selectedDeviceRef.current)) {
           const fallback = activeIds[0] || 'default';
@@ -164,6 +196,7 @@ export default function IPMCalibration() {
           const payload = payloadsRef.current[fallback];
           setCurrentVehicles(payload?.vehicles || []);
           setCameraId(fallback.startsWith('rtsp_') ? fallback.slice(5) : fallback);
+          clearCameraMarks();
         }
       } catch {}
     };
@@ -174,19 +207,24 @@ export default function IPMCalibration() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [clearCameraMarks]);
 
   // WebSocket for camera feed
   useEffect(() => {
     const onImage = (blob: Blob, meta: FrameMeta) => {
       const deviceId = normalizeDeviceId(meta.deviceId);
+      const now = Date.now();
+      const lastFrameAt = lastFrameAtRef.current[deviceId];
+      const selectedBeforeImage = selectedDeviceRef.current;
       const url = URL.createObjectURL(blob);
       const previous = frameUrlsRef.current[deviceId];
       if (previous) URL.revokeObjectURL(previous);
       frameUrlsRef.current[deviceId] = url;
+      lastFrameAtRef.current[deviceId] = now;
       if (deviceId.startsWith('rtsp_')) {
         setActiveRtspDevices(prev => prev.includes(deviceId) ? prev : [...prev, deviceId]);
         if (selectedDeviceRef.current === 'default' && !frameUrlsRef.current.default) {
+          clearCameraMarks();
           selectedDeviceRef.current = deviceId;
           setSelectedDeviceId(deviceId);
           setCameraId(deviceId.slice(5));
@@ -195,6 +233,9 @@ export default function IPMCalibration() {
         }
       }
       if (selectedDeviceRef.current === deviceId) {
+        if (selectedBeforeImage === deviceId && lastFrameAt && now - lastFrameAt > 4000) {
+          clearCameraMarks();
+        }
         frameRef.current = url;
         setHasFrame(true);
       }
@@ -205,6 +246,7 @@ export default function IPMCalibration() {
       if (deviceId.startsWith('rtsp_')) {
         setActiveRtspDevices(prev => prev.includes(deviceId) ? prev : [...prev, deviceId]);
         if (selectedDeviceRef.current === 'default' && !frameUrlsRef.current.default) {
+          clearCameraMarks();
           selectedDeviceRef.current = deviceId;
           setSelectedDeviceId(deviceId);
           setCameraId(deviceId.slice(5));
@@ -215,7 +257,15 @@ export default function IPMCalibration() {
         setCurrentVehicles(data.vehicles);
       }
     };
-    const onStatus = (s: any) => setWsStatus(s);
+    const onStatus = (s: any) => {
+      setWsStatus(s);
+      if (s === 'disconnected') {
+        frameRef.current = null;
+        setHasFrame(false);
+        setCurrentVehicles([]);
+        clearCameraMarks();
+      }
+    };
     wsRef.current = new DashboardWebSocket(onMessage, onImage, onStatus);
     wsRef.current.connect();
     return () => {
@@ -224,7 +274,7 @@ export default function IPMCalibration() {
         if (url.startsWith('blob:')) URL.revokeObjectURL(url);
       }
     };
-  }, []);
+  }, [clearCameraMarks]);
   // Render camera feed canvas
   useEffect(() => {
     const canvas = cameraCanvasRef.current;
@@ -299,9 +349,9 @@ export default function IPMCalibration() {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.lineWidth = Math.max(3, arrowSize * 0.16);
-      ctx.strokeStyle = 'rgba(2, 6, 23, 0.92)';
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.7)';
       ctx.fillStyle = 'rgba(248, 250, 252, 0.96)';
-      ctx.shadowColor = 'rgba(2, 6, 23, 0.65)';
+      ctx.shadowColor = 'rgba(2, 6, 23, 0.75)';
       ctx.shadowBlur = 4 * scale;
       ctx.strokeText('->', 0, 0);
       ctx.fillText('->', 0, 0);
@@ -349,10 +399,21 @@ export default function IPMCalibration() {
     };
 
     ctx.save();
-    ctx.fillStyle = '#0f172a';
+    const asphalt = ctx.createLinearGradient(0, 0, cw, ch);
+    asphalt.addColorStop(0, '#343a3d');
+    asphalt.addColorStop(0.52, '#2f3538');
+    asphalt.addColorStop(1, '#272d30');
+    ctx.fillStyle = asphalt;
     ctx.fillRect(0, 0, cw, ch);
 
-    ctx.strokeStyle = 'rgba(51, 65, 85, 0.75)';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.035)';
+    for (let x = 4; x < cw; x += 11) {
+      for (let y = 3; y < ch; y += 13) {
+        if (((x * 17 + y * 31) % 19) < 4) ctx.fillRect(x, y, 1, 1);
+      }
+    }
+
+    ctx.strokeStyle = 'rgba(226, 232, 240, 0.08)';
     ctx.lineWidth = 1;
     for (let x = 0; x <= WORLD_WIDTH; x += 80) {
       ctx.beginPath(); ctx.moveTo(x * sx, 0); ctx.lineTo(x * sx, ch); ctx.stroke();
@@ -368,12 +429,12 @@ export default function IPMCalibration() {
       drawPolyline(points);
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      ctx.strokeStyle = 'rgba(226, 232, 240, 0.42)';
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.42)';
       ctx.lineWidth = Math.max(6, 8 * scale);
       ctx.stroke();
 
       drawPolyline(points);
-      ctx.strokeStyle = 'rgba(37, 99, 235, 0.98)';
+      ctx.strokeStyle = 'rgba(96, 165, 250, 0.78)';
       ctx.lineWidth = Math.max(3, 4 * scale);
       ctx.stroke();
     }
@@ -404,53 +465,259 @@ export default function IPMCalibration() {
       const px = node.x * sx;
       const py = node.y * sy;
       ctx.beginPath(); ctx.arc(px, py, 4.5, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.95)'; ctx.fill();
-      ctx.strokeStyle = 'rgba(226, 232, 240, 0.65)'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.86)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(226, 232, 240, 0.75)'; ctx.lineWidth = 1.5; ctx.stroke();
     }
 
-    ctx.strokeStyle = 'rgba(59, 130, 246, 0.55)';
+    ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)';
     ctx.lineWidth = 3;
     ctx.strokeRect(1.5, 1.5, cw - 3, ch - 3);
     ctx.restore();
   };
 
-  // Render world canvas (read-only sand-table road model background)
-  useEffect(() => {
-    const canvas = worldCanvasRef.current;
+  const drawWorldCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const redrawWorld = () => {
-      const cw = canvas.width || WORLD_WIDTH, ch = canvas.height || WORLD_HEIGHT;
-      drawRoadModelBackground(ctx, cw, ch);
+    const cw = canvas.width || WORLD_WIDTH;
+    const ch = canvas.height || WORLD_HEIGHT;
+    drawRoadModelBackground(ctx, cw, ch);
 
-      // Calibration points (green)
-      drawPoints(ctx, worldPtsRef.current, 0, 0, cw, ch, WORLD_WIDTH, WORLD_HEIGHT);
-      // Transformed vehicle dots (red)
-      for (const v of vehicleDotsRef.current) {
-        if (!v.world) continue;
-        const px = v.world[0] / WORLD_WIDTH * cw;
-        const py = v.world[1] / WORLD_HEIGHT * ch;
-        ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(239, 68, 68, 0.8)'; ctx.fill();
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
-        ctx.fillStyle = '#fff'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(`#${v.id || '?'}`, px, py - 12);
+    const heatPoints = heatmapPointsRef.current;
+    if (heatPoints.length > 0) {
+      const densityCanvas = document.createElement('canvas');
+      densityCanvas.width = cw;
+      densityCanvas.height = ch;
+      const densityCtx = densityCanvas.getContext('2d');
+
+      if (densityCtx) {
+        const radius = 72;
+        const canvasPoints = heatPoints.map(point => ({
+          x: point.x / WORLD_WIDTH * cw,
+          y: point.y / WORLD_HEIGHT * ch,
+        }));
+
+        densityCtx.clearRect(0, 0, cw, ch);
+        densityCtx.globalCompositeOperation = 'lighter';
+        densityCtx.lineCap = 'round';
+        densityCtx.lineJoin = 'round';
+
+        const overlapDistance = radius * 2;
+        for (let i = 0; i < canvasPoints.length; i++) {
+          for (let j = i + 1; j < canvasPoints.length; j++) {
+            const a = canvasPoints[i];
+            const b = canvasPoints[j];
+            const distance = Math.hypot(a.x - b.x, a.y - b.y);
+            if (distance > overlapDistance) continue;
+            const strength = Math.max(0, 1 - distance / overlapDistance);
+            const nx = -(b.y - a.y) / distance;
+            const ny = (b.x - a.x) / distance;
+            const bend = (((i + j) % 2 === 0) ? 1 : -1) * Math.min(radius * 0.46, distance * 0.2);
+            const control = {
+              x: (a.x + b.x) / 2 + nx * bend,
+              y: (a.y + b.y) / 2 + ny * bend,
+            };
+            const curvePoint = (t: number) => {
+              const inv = 1 - t;
+              const wave = Math.sin(t * Math.PI * 2 + (i + j) * 0.9) * radius * 0.035 * strength;
+              return {
+                x: inv * inv * a.x + 2 * inv * t * control.x + t * t * b.x + nx * wave,
+                y: inv * inv * a.y + 2 * inv * t * control.y + t * t * b.y + ny * wave,
+              };
+            };
+
+            const segments = 18;
+            const bridgeLayers = [
+              { baseWidth: radius * (0.68 + strength * 0.16), centerCut: radius * 0.2, baseAlpha: 0.1 + strength * 0.18, centerAlpha: 0.2 },
+              { baseWidth: radius * (0.34 + strength * 0.12), centerCut: radius * 0.16, baseAlpha: 0.2 + strength * 0.28, centerAlpha: 0.34 },
+              { baseWidth: radius * (0.18 + strength * 0.08), centerCut: radius * 0.1, baseAlpha: 0.42 + strength * 0.28, centerAlpha: 0.32 },
+            ];
+            for (const layer of bridgeLayers) {
+              for (let step = 0; step < segments; step++) {
+                const t0 = step / segments;
+                const t1 = (step + 1) / segments;
+                const midT = (t0 + t1) / 2;
+                const centerFocus = Math.sin(midT * Math.PI);
+                const from = curvePoint(t0);
+                const to = curvePoint(t1);
+                densityCtx.strokeStyle = `rgba(255, 255, 255, ${layer.baseAlpha + centerFocus * layer.centerAlpha})`;
+                densityCtx.lineWidth = Math.max(radius * 0.08, layer.baseWidth - centerFocus * layer.centerCut);
+                densityCtx.beginPath();
+                densityCtx.moveTo(from.x, from.y);
+                densityCtx.lineTo(to.x, to.y);
+                densityCtx.stroke();
+              }
+            }
+          }
+        }
+
+        for (const point of canvasPoints) {
+          const gradient = densityCtx.createRadialGradient(point.x, point.y, 0, point.x, point.y, radius);
+          gradient.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
+          gradient.addColorStop(0.2, 'rgba(255, 255, 255, 0.68)');
+          gradient.addColorStop(0.46, 'rgba(255, 255, 255, 0.32)');
+          gradient.addColorStop(0.76, 'rgba(255, 255, 255, 0.11)');
+          gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+          densityCtx.fillStyle = gradient;
+          densityCtx.beginPath();
+          densityCtx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+          densityCtx.fill();
+        }
+
+        const density = densityCtx.getImageData(0, 0, cw, ch);
+        const colored = ctx.createImageData(cw, ch);
+        const ramp = [
+          { stop: 0.00, color: [255, 244, 189] },
+          { stop: 0.14, color: [255, 214, 84] },
+          { stop: 0.31, color: [255, 139, 31] },
+          { stop: 0.48, color: [239, 57, 45] },
+          { stop: 0.72, color: [177, 24, 37] },
+          { stop: 1.00, color: [112, 18, 32] },
+        ];
+        const sampleRamp = (value: number) => {
+          const t = Math.max(0, Math.min(1, value));
+          for (let i = 0; i < ramp.length - 1; i++) {
+            const left = ramp[i];
+            const right = ramp[i + 1];
+            if (t < left.stop || t > right.stop) continue;
+            const local = (t - left.stop) / (right.stop - left.stop || 1);
+            return [
+              left.color[0] + (right.color[0] - left.color[0]) * local,
+              left.color[1] + (right.color[1] - left.color[1]) * local,
+              left.color[2] + (right.color[2] - left.color[2]) * local,
+            ];
+          }
+          return ramp[ramp.length - 1].color;
+        };
+
+        for (let i = 0; i < density.data.length; i += 4) {
+          const alpha = density.data[i + 3];
+          if (alpha < 8) continue;
+          const intensity = Math.min(1, alpha / 172);
+          const [r, g, b] = sampleRamp(intensity);
+          colored.data[i] = r;
+          colored.data[i + 1] = g;
+          colored.data[i + 2] = b;
+          colored.data[i + 3] = Math.min(178, 42 + intensity * 132);
+        }
+
+        const coloredCanvas = document.createElement('canvas');
+        coloredCanvas.width = cw;
+        coloredCanvas.height = ch;
+        const coloredCtx = coloredCanvas.getContext('2d');
+        if (coloredCtx) {
+          coloredCtx.putImageData(colored, 0, 0);
+          ctx.save();
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.globalAlpha = 0.82;
+          ctx.drawImage(coloredCanvas, 0, 0);
+          ctx.restore();
+        }
       }
+    }
+
+    drawPoints(ctx, worldPtsRef.current, 0, 0, cw, ch, WORLD_WIDTH, WORLD_HEIGHT);
+    for (const v of vehicleDotsRef.current) {
+      if (!v.world) continue;
+      const px = v.world[0] / WORLD_WIDTH * cw;
+      const py = v.world[1] / WORLD_HEIGHT * ch;
+      ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.8)'; ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(`#${v.id || '?'}`, px, py - 12);
+    }
+  }, []);
+
+  const handleWhiteboardPanStart = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 2) return;
+    const container = e.currentTarget;
+    e.preventDefault();
+    container.style.cursor = 'grabbing';
+    container.style.userSelect = 'none';
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startLeft = container.scrollLeft;
+    const startTop = container.scrollTop;
+
+    const handleMove = (event: MouseEvent) => {
+      event.preventDefault();
+      container.scrollLeft = startLeft - (event.clientX - startX);
+      container.scrollTop = startTop - (event.clientY - startY);
+    };
+    const stopPan = () => {
+      container.style.cursor = '';
+      container.style.userSelect = '';
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', stopPan);
+      window.removeEventListener('blur', stopPan);
     };
 
-    const parent = canvas.parentElement;
-    const ro = new ResizeObserver(() => {
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', stopPan);
+    window.addEventListener('blur', stopPan);
+  };
+
+  // Render world canvas (read-only sand-table road model background)
+  useEffect(() => {
+    const canvases = [worldCanvasRef.current, fullscreenWorldCanvasRef.current].filter(Boolean) as HTMLCanvasElement[];
+    const observers: ResizeObserver[] = [];
+
+    const setupCanvas = (canvas: HTMLCanvasElement) => {
       canvas.width = WORLD_WIDTH;
       canvas.height = WORLD_HEIGHT;
-      redrawWorld();
-    });
-    if (parent) ro.observe(parent);
+      drawWorldCanvas(canvas);
 
-    redrawWorld();
-    return () => { ro.disconnect(); };
-  }, [worldPoints, transformedVehicles]);
+      const parent = canvas.parentElement;
+      if (!parent) return;
+      const ro = new ResizeObserver(() => {
+        canvas.width = WORLD_WIDTH;
+        canvas.height = WORLD_HEIGHT;
+        drawWorldCanvas(canvas);
+      });
+      ro.observe(parent);
+      observers.push(ro);
+    };
+
+    canvases.forEach(setupCanvas);
+    return () => { observers.forEach(ro => ro.disconnect()); };
+  }, [worldPoints, transformedVehicles, heatmapPoints, isWorldFullscreen, drawWorldCanvas]);
+
+  useEffect(() => {
+    if (!isWorldFullscreen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsWorldFullscreen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isWorldFullscreen]);
+
+  const renderWhiteboardCanvas = (
+    ref: React.RefObject<HTMLCanvasElement | null>,
+    displayScale = WORLD_DISPLAY_SCALE,
+    fitToContainer = false,
+  ) => (
+    <canvas
+      ref={ref}
+      onClick={handleWorldClick}
+      className="block"
+      style={fitToContainer
+        ? {
+            maxWidth: '100%',
+            maxHeight: '100%',
+            width: 'auto',
+            height: 'auto',
+            cursor: worldPoints.length < 4 ? 'crosshair' : 'default',
+          }
+        : {
+            width: `${WORLD_WIDTH * displayScale}px`,
+            height: `${WORLD_HEIGHT * displayScale}px`,
+            cursor: worldPoints.length < 4 ? 'crosshair' : 'default',
+          }}
+    />
+  );
   const drawPoints = (ctx: CanvasRenderingContext2D, points: Point[], sx: number, sy: number, sw: number, sh: number, imgW: number, imgH: number) => {
     for (let i = 0; i < points.length; i++) {
       const px = sx + points[i].x / imgW * sw;
@@ -528,9 +795,50 @@ export default function IPMCalibration() {
     }
   };
 
+  const isPointInCalibrationArea = (point: Point, polygon: Point[]) => {
+    if (polygon.length < 3) return false;
+
+    const onSegment = (a: Point, b: Point) => {
+      const cross = (point.y - a.y) * (b.x - a.x) - (point.x - a.x) * (b.y - a.y);
+      if (Math.abs(cross) > 1e-6) return false;
+      const dot = (point.x - a.x) * (b.x - a.x) + (point.y - a.y) * (b.y - a.y);
+      if (dot < 0) return false;
+      const squaredLength = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
+      return dot <= squaredLength;
+    };
+
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const a = polygon[i];
+      const b = polygon[j];
+      if (onSegment(a, b)) return true;
+      const intersects = ((a.y > point.y) !== (b.y > point.y))
+        && (point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x);
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  };
+
   const doTransform = useCallback(async () => {
-    if (!laneId || currentVehicles.length === 0) { setTransformedVehicles([]); return; }
-    const points = currentVehicles.map((v: any) => [(v.box[0] + v.box[2]) / 2, v.box[3]]);
+    if (!laneId || currentVehicles.length === 0) { setTransformedVehicles([]); return []; }
+    if (cameraPoints.length < 3) { setTransformedVehicles([]); return []; }
+
+    const vehiclesInCalibrationArea = currentVehicles
+      .map((vehicle: any) => {
+        if (!Array.isArray(vehicle.box) || vehicle.box.length < 4) return null;
+        const cameraPoint = {
+          x: (vehicle.box[0] + vehicle.box[2]) / 2,
+          y: vehicle.box[3],
+        };
+        return isPointInCalibrationArea(cameraPoint, cameraPoints)
+          ? { vehicle, cameraPoint }
+          : null;
+      })
+      .filter((item): item is { vehicle: any; cameraPoint: Point } => Boolean(item));
+
+    if (vehiclesInCalibrationArea.length === 0) { setTransformedVehicles([]); return []; }
+
+    const points = vehiclesInCalibrationArea.map(({ cameraPoint }) => [cameraPoint.x, cameraPoint.y]);
     try {
       const res = await ipmRequest('/ipm/transform', {
         method: 'POST',
@@ -538,23 +846,52 @@ export default function IPMCalibration() {
       });
       if (res.code === 200 && res.data?.transformed) {
         const transformed = res.data.transformed;
-        setTransformedVehicles(currentVehicles.map((v: any, i: number) => ({
+        const nextVehicles = vehiclesInCalibrationArea.map(({ vehicle: v }, i: number) => ({
           id: v.id,
           class: v.class,
           camera: points[i],
           world: transformed[i] || null,
-        })));
+        }));
+        setTransformedVehicles(nextVehicles);
+        return nextVehicles;
       } else {
         setTransformedVehicles([]);
+        return [];
       }
-    } catch { setTransformedVehicles([]); }
-  }, [cameraId, laneId, currentVehicles]);
+    } catch { setTransformedVehicles([]); return []; }
+  }, [cameraId, laneId, currentVehicles, cameraPoints]);
 
-  // Auto-transform every 5 seconds
-  useEffect(() => {
-    const t = setInterval(() => doTransform(), 5000);
-    return () => clearInterval(t);
+  const toggleContinuousTransform = () => {
+    setIsContinuousTransforming(prev => !prev);
+  };
+
+  const renderHeatmapOnce = useCallback(async () => {
+    const transformed = await doTransform();
+    setHeatmapPoints(
+      transformed
+        .filter((vehicle: any) => Array.isArray(vehicle.world))
+        .map((vehicle: any) => ({ x: vehicle.world[0], y: vehicle.world[1] }))
+    );
   }, [doTransform]);
+
+  const toggleContinuousHeatmapRendering = () => {
+    setIsContinuousHeatmapRendering(prev => !prev);
+  };
+
+  // Continuous transform mode mirrors the one-shot transform every second.
+  useEffect(() => {
+    if (!isContinuousTransforming) return;
+    doTransform();
+    const t = setInterval(() => doTransform(), 1000);
+    return () => clearInterval(t);
+  }, [doTransform, isContinuousTransforming]);
+
+  useEffect(() => {
+    if (!isContinuousHeatmapRendering) return;
+    renderHeatmapOnce();
+    const t = setInterval(() => renderHeatmapOnce(), 1000);
+    return () => clearInterval(t);
+  }, [renderHeatmapOnce, isContinuousHeatmapRendering]);
 
   return (
     <div className="space-y-6">
@@ -687,14 +1024,45 @@ export default function IPMCalibration() {
               <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2">
                 <Crosshair size={16} className="text-rose-400" /> 俯视坐标验证
               </h3>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center justify-end gap-2">
                 <span className="text-xs text-[var(--color-text-secondary)]">当前 {currentVehicles.length} 辆车</span>
                 <button
                   onClick={doTransform}
-                  disabled={!laneId || currentVehicles.length === 0}
+                  disabled={isContinuousTransforming || !laneId || currentVehicles.length === 0}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 >
-                  <RefreshCw size={12} /> 转换
+                  <RefreshCw size={12} /> 开始转换
+                </button>
+                <button
+                  onClick={toggleContinuousTransform}
+                  disabled={!isContinuousTransforming && (!laneId || currentVehicles.length === 0)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                    isContinuousTransforming
+                      ? 'bg-rose-500/15 text-rose-400 border-rose-500/30 hover:bg-rose-500/25'
+                      : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25'
+                  }`}
+                >
+                  <RefreshCw size={12} className={isContinuousTransforming ? 'animate-spin' : ''} />
+                  {isContinuousTransforming ? '结束转换' : '开始连续转换'}
+                </button>
+                <button
+                  onClick={renderHeatmapOnce}
+                  disabled={isContinuousHeatmapRendering || !laneId || currentVehicles.length === 0}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Crosshair size={12} /> 渲染一次热力图
+                </button>
+                <button
+                  onClick={toggleContinuousHeatmapRendering}
+                  disabled={!isContinuousHeatmapRendering && (!laneId || currentVehicles.length === 0)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                    isContinuousHeatmapRendering
+                      ? 'bg-rose-500/15 text-rose-400 border-rose-500/30 hover:bg-rose-500/25'
+                      : 'bg-amber-500/15 text-amber-400 border-amber-500/30 hover:bg-amber-500/25'
+                  }`}
+                >
+                  <RefreshCw size={12} className={isContinuousHeatmapRendering ? 'animate-spin' : ''} />
+                  {isContinuousHeatmapRendering ? '结束渲染热力图' : '开始持续渲染热力图'}
                 </button>
               </div>
             </div>
@@ -771,14 +1139,57 @@ export default function IPMCalibration() {
               <div className="flex items-center gap-3">
                 <span className="text-xs text-[var(--color-text-secondary)]">{worldPoints.length}/4 点</span>
                 <button onClick={() => setWorldPoints([])} className="text-xs text-[var(--color-text-muted)] hover:text-rose-400 transition-colors">清除</button>
+                <button
+                  type="button"
+                  onClick={() => setIsWorldFullscreen(true)}
+                  className="p-2 rounded-lg border border-[var(--color-border-card)] bg-white/90 dark:bg-[#1C1C22]/90 text-[var(--color-text-secondary)] hover:text-blue-400 hover:border-blue-500/40 transition-colors"
+                  title="全屏"
+                >
+                  <Maximize2 size={16} />
+                </button>
               </div>
             </div>
-            <div className="relative flex-1 rounded-xl overflow-auto bg-gray-100 dark:bg-[#0F1013] border border-[var(--color-border-card)]">
-              <canvas ref={worldCanvasRef} onClick={handleWorldClick} className="block" style={{ width: `${WORLD_WIDTH * WORLD_DISPLAY_SCALE}px`, height: `${WORLD_HEIGHT * WORLD_DISPLAY_SCALE}px`, cursor: worldPoints.length < 4 ? 'crosshair' : 'grab' }} />
+            <div
+              ref={worldScrollRef}
+              onMouseDown={handleWhiteboardPanStart}
+              onContextMenu={e => e.preventDefault()}
+              className="relative flex-1 rounded-xl overflow-auto bg-[#2f3538] border border-[var(--color-border-card)]"
+            >
+              {renderWhiteboardCanvas(worldCanvasRef)}
             </div>
           </div>
         </div>
       </div>
+
+      {isWorldFullscreen && (
+        <div className="fixed inset-0 z-50 bg-black/55 dark:bg-black/75 backdrop-blur-sm p-4 sm:p-6 flex items-center justify-center">
+          <div className="dashboard-card w-full h-full max-w-[1600px] p-4 sm:p-5 flex flex-col shadow-2xl">
+            <div className="flex items-center justify-between gap-3 mb-3 shrink-0">
+              <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2">
+                <Move size={16} className="text-blue-400" /> 俯视图（白板）
+              </h3>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-[var(--color-text-secondary)]">{worldPoints.length}/4 点</span>
+                <button
+                  type="button"
+                  onClick={() => setIsWorldFullscreen(false)}
+                  className="p-2 rounded-lg border border-[var(--color-border-card)] bg-white/90 dark:bg-[#1C1C22]/90 text-[var(--color-text-secondary)] hover:text-rose-400 hover:border-rose-500/40 transition-colors"
+                  title="关闭"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+            <div
+              ref={fullscreenWorldScrollRef}
+              onContextMenu={e => e.preventDefault()}
+              className="relative flex-1 rounded-xl overflow-hidden bg-[#2f3538] border border-[var(--color-border-card)] flex items-center justify-center"
+            >
+              {renderWhiteboardCanvas(fullscreenWorldCanvasRef, WORLD_DISPLAY_SCALE, true)}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

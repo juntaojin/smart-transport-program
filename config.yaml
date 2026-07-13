@@ -15,9 +15,9 @@ cloud_server:
     stream_broadcast_fps: 24
     rtsp_broadcast_fps: 30
   models:
-    yolo_model_path: models/yolo26s.pt
-    yolo_confidence: 0.25
-    yolo_iou: 0.45
+    yolo_model_path: models\yolo11s_t.pt
+    yolo_confidence: 0.5
+    yolo_iou: 0.5
     yolo_imgsz: 640
     anomaly_threshold: 0.25
     anomaly_model_path: models/yolo26s.pt
@@ -36,17 +36,7 @@ cloud_server:
     anomaly_static_edge_suppression_px: 3
     anomaly_vehicle_mask_padding: 8
   zones:
-    no_parking:
-    - name: 禁停区
-      points:
-      - - 0.014
-        - 0.0182
-      - - 0.9829
-        - 0.0263
-      - - 0.9891
-        - 0.9694
-      - - 0.0125
-        - 0.9748
+    no_parking: []
   thresholds:
     parking_duration_limit: 1.0
     congestion_high: 8
@@ -59,30 +49,59 @@ ipm_service:
   camera_01:
     num1:
       camera_points:
-      - - 614.0
-        - 96.0
-      - - 1157.0
+      - - 623.0
+        - 112.0
+      - - 1153.0
         - 102.0
-      - - 1553.0
-        - 1068.0
-      - - 146.0
-        - 1071.0
+      - - 1542.0
+        - 1074.0
+      - - 151.0
+        - 1074.0
       world_points:
-      - - 194.0
-        - 221.0
-      - - 259.0
-        - 221.0
-      - - 260.0
-        - 470.0
-      - - 195.0
-        - 470.0
+      - - 193.0
+        - 222.0
+      - - 268.0
+        - 219.0
+      - - 269.0
+        - 471.0
+      - - 190.0
+        - 471.0
       homography_matrix:
-      - - 0.12986771
-        - 0.43563159
-        - 103.29562479
-      - - -0.01655977
-        - 1.18492563
-        - 152.56412524
-      - - -3.658e-05
-        - 0.00189068
+      - - 0.18189482
+        - 0.44429947
+        - 74.95439356
+      - - 0.0151364
+        - 1.21635564
+        - 128.14172527
+      - - 3.214e-05
+        - 0.00190471
+        - 1.0
+    num2:
+      camera_points:
+      - - 633.0
+        - 57.0
+      - - 785.0
+        - 62.0
+      - - 690.0
+        - 572.0
+      - - 347.0
+        - 541.0
+      world_points:
+      - - 190.0
+        - 221.0
+      - - 270.0
+        - 222.0
+      - - 272.0
+        - 470.0
+      - - 188.0
+        - 469.0
+      homography_matrix:
+      - - 0.63362746
+        - 0.91176567
+        - -226.72995052
+      - - -0.02607847
+        - 1.94774882
+        - 168.73988291
+      - - 4.017e-05
+        - 0.00290816
         - 1.0

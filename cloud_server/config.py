@@ -17,9 +17,9 @@ defaults = {
                    "rtsp_mjpeg_qscale": 5, "capture_fps": 24,
                    "stream_broadcast_fps": 24, "rtsp_broadcast_fps": 30},
         "models": {
-            "yolo_model_path": "models/yolo26s.pt",
-            "yolo_confidence": 0.25,
-            "yolo_iou": 0.45,
+            "yolo_model_path": "models/yolov11s_cisdrone_t.pt",
+            "yolo_confidence": 0.75,
+            "yolo_iou": 0.5,
             "yolo_imgsz": 640,
             "anomaly_threshold": 0.25,
             "anomaly_model_path": "models/yolo26s.pt",

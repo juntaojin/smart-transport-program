@@ -172,6 +172,37 @@ class AnomalyLifecycleTests(unittest.TestCase):
 
         self.assertEqual(calls[0]["device"], "cpu")
 
+    def test_person_is_not_excluded_as_normal_in_sandbox_scene(self):
+        class FakeBox:
+            def __init__(self, cls_id):
+                self.cls = np.array([cls_id])
+                self.xyxy = np.array([[1.0, 2.0, 11.0, 22.0]])
+                self.conf = np.array([0.9])
+
+        class FakeBoxes:
+            def __init__(self):
+                self._boxes = [FakeBox(0), FakeBox(2)]
+
+            def __len__(self):
+                return len(self._boxes)
+
+            def __iter__(self):
+                return iter(self._boxes)
+
+        class FakeModel:
+            def __call__(self, frame, **kwargs):
+                return [types.SimpleNamespace(boxes=FakeBoxes())]
+
+        fake_ultralytics = types.SimpleNamespace(YOLO=lambda path: FakeModel())
+        with patch.dict(sys.modules, {"ultralytics": fake_ultralytics}), \
+                patch.object(self.module.os.path, "isfile", return_value=True):
+            self.assertTrue(self.module.load_anomaly_model("fake.pt", "cpu"))
+            dets = self.module._NormalDetector().detect(
+                np.zeros((8, 8, 3), dtype=np.uint8)
+            )
+
+        self.assertEqual([det["label"] for det in dets], ["car"])
+
 
 if __name__ == "__main__":
     unittest.main()
