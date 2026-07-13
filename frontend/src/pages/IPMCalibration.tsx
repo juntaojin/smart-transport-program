@@ -664,135 +664,134 @@ export default function IPMCalibration() {
         </div>
       </div>
 
-      {/* Dual panels */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-        {/* Camera panel */}
-        <div className="dashboard-card p-6">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2">
-              <span className={`w-2 h-2 rounded-full ${wsStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-              摄像头画面
-            </h3>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-[var(--color-text-secondary)]">{cameraPoints.length}/4 点</span>
-              <button onClick={() => setCameraPoints([])} className="text-xs text-[var(--color-text-muted)] hover:text-rose-400 transition-colors">清除</button>
+      {/* Main Layout Area */}
+      <div className="flex flex-col xl:flex-row gap-6 items-start">
+        
+        {/* Left Column: Camera & Data Tables */}
+        <div className="w-full xl:w-5/12 flex flex-col gap-6 shrink-0">
+          
+          {/* Camera panel */}
+          <div className="dashboard-card p-6">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${wsStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+                摄像头画面
+              </h3>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-[var(--color-text-secondary)]">{cameraPoints.length}/4 点</span>
+                <button onClick={() => setCameraPoints([])} className="text-xs text-[var(--color-text-muted)] hover:text-rose-400 transition-colors">清除</button>
+              </div>
+            </div>
+            <div className="relative w-full rounded-xl overflow-hidden bg-gray-100 dark:bg-[#0F1013] border border-[var(--color-border-card)]" style={{ aspectRatio: videoAspectRatio }}>
+              <canvas ref={cameraCanvasRef} onClick={handleCameraClick} className="absolute inset-0 w-full h-full block" style={{ cursor: cameraPoints.length < 4 ? 'crosshair' : 'default' }} />
+              {!hasFrame && (
+                <div className="absolute inset-0 flex items-center justify-center bg-gray-100 dark:bg-[#0F1013]">
+                  <div className="text-center">
+                    <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                    <p className="text-[var(--color-text-muted)] text-sm">等待视频流...</p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-          <div className="relative w-full max-h-[62vh] rounded-xl overflow-hidden bg-gray-100 dark:bg-[#0F1013] border border-[var(--color-border-card)]" style={{ aspectRatio: videoAspectRatio }}>
-            <canvas ref={cameraCanvasRef} onClick={handleCameraClick} className="absolute inset-0 w-full h-full block" style={{ cursor: cameraPoints.length < 4 ? 'crosshair' : 'default' }} />
-            {!hasFrame && (
-              <div className="absolute inset-0 flex items-center justify-center bg-gray-100 dark:bg-[#0F1013]">
-                <div className="text-center">
-                  <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-                  <p className="text-[var(--color-text-muted)] text-sm">等待视频流...</p>
-                </div>
+
+          {/* Transform verification */}
+          <div className="dashboard-card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2">
+                <Crosshair size={16} className="text-rose-400" /> 俯视坐标验证
+              </h3>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-[var(--color-text-secondary)]">当前 {currentVehicles.length} 辆车</span>
+                <button
+                  onClick={doTransform}
+                  disabled={!laneId || currentVehicles.length === 0}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  <RefreshCw size={12} /> 转换
+                </button>
+              </div>
+            </div>
+            {transformedVehicles.length === 0 ? (
+              <p className="text-[var(--color-text-muted)] text-sm py-4 text-center">
+                {!laneId ? '请先选择车道 ID' : currentVehicles.length === 0 ? '等待车辆检测数据...' : '转换中...'}
+              </p>
+            ) : (
+              <div className="overflow-x-auto max-h-[220px] overflow-y-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-[var(--color-border-card)] text-[var(--color-text-secondary)] uppercase tracking-wider sticky top-0 bg-[var(--color-bg-card)]">
+                      <th className="py-2 px-2">ID</th>
+                      <th className="py-2 px-2">类型</th>
+                      <th className="py-2 px-2">摄像坐标</th>
+                      <th className="py-2 px-2">俯视坐标</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--color-border-card)]">
+                    {transformedVehicles.map((v: any, i: number) => (
+                      <tr key={i} className="hover:hover:bg-gray-100 dark:hover:bg-[#1C1E24]/40 transition-colors">
+                        <td className="py-2 px-2 font-mono text-blue-400">#{v.id}</td>
+                        <td className="py-2 px-2 text-[var(--color-text-primary)] capitalize">{v.class}</td>
+                        <td className="py-2 px-2 font-mono text-[var(--color-text-secondary)]">
+                          ({v.camera[0].toFixed(0)}, {v.camera[1].toFixed(0)})
+                        </td>
+                        <td className="py-2 px-2 font-mono text-emerald-400">
+                          {v.world ? `(${v.world[0].toFixed(1)}, ${v.world[1].toFixed(1)})` : '-'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Existing calibrations */}
+          <div className="dashboard-card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2">
+                <RefreshCw size={16} className="text-blue-400" /> 已标定车道
+              </h3>
+              <button onClick={loadConfigs} className="text-xs text-blue-400 hover:text-blue-300 transition-colors">刷新</button>
+            </div>
+            {Object.keys(calibratedLanes).length === 0 ? (
+              <p className="text-[var(--color-text-muted)] text-sm py-4 text-center">暂无标定数据</p>
+            ) : (
+              <div className="space-y-3 max-h-[180px] overflow-y-auto pr-2">
+                {Object.entries(calibratedLanes).map(([cid, lanes]) =>
+                  lanes.map((lid: string) => (
+                    <div key={`${cid}/${lid}`} className="flex items-center justify-between bg-white/90 dark:bg-[#1C1C22]/90 border border-[var(--color-border-card)] rounded-xl px-4 py-2 hover:border-[var(--color-border-card)] transition-colors">
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-mono text-blue-400">{cid}</span>
+                        <span className="text-xs text-[var(--color-text-muted)]">/</span>
+                        <span className="text-sm font-semibold text-gray-900 dark:text-gray-200">{lid}</span>
+                      </div>
+                      <button onClick={() => handleDelete(cid, lid)} className="text-rose-500/80 hover:text-rose-400 hover:bg-rose-500/10 p-1.5 rounded-lg transition-colors">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))
+                )}
               </div>
             )}
           </div>
         </div>
 
-        {/* World panel */}
-        <div className="dashboard-card p-6">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2"><Move size={16} className="text-blue-400" /> 俯视图（白板）</h3>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-[var(--color-text-secondary)]">{worldPoints.length}/4 点</span>
-              <button onClick={() => setWorldPoints([])} className="text-xs text-[var(--color-text-muted)] hover:text-rose-400 transition-colors">清除</button>
+        {/* Right Column: World panel (Whiteboard) */}
+        <div className="w-full xl:w-7/12 flex flex-col">
+          <div className="dashboard-card p-6 h-full min-h-[760px] flex flex-col">
+            <div className="flex items-center justify-between mb-3 shrink-0">
+              <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2"><Move size={16} className="text-blue-400" /> 俯视图（白板）</h3>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-[var(--color-text-secondary)]">{worldPoints.length}/4 点</span>
+                <button onClick={() => setWorldPoints([])} className="text-xs text-[var(--color-text-muted)] hover:text-rose-400 transition-colors">清除</button>
+              </div>
+            </div>
+            <div className="relative flex-1 rounded-xl overflow-auto bg-gray-100 dark:bg-[#0F1013] border border-[var(--color-border-card)]">
+              <canvas ref={worldCanvasRef} onClick={handleWorldClick} className="block" style={{ width: `${WORLD_WIDTH * WORLD_DISPLAY_SCALE}px`, height: `${WORLD_HEIGHT * WORLD_DISPLAY_SCALE}px`, cursor: worldPoints.length < 4 ? 'crosshair' : 'grab' }} />
             </div>
           </div>
-          <div className="relative h-[720px] xl:h-[760px] rounded-xl overflow-auto bg-gray-100 dark:bg-[#0F1013] border border-[var(--color-border-card)]">
-            <canvas ref={worldCanvasRef} onClick={handleWorldClick} className="block" style={{ width: `${WORLD_WIDTH * WORLD_DISPLAY_SCALE}px`, height: `${WORLD_HEIGHT * WORLD_DISPLAY_SCALE}px`, cursor: worldPoints.length < 4 ? 'crosshair' : 'grab' }} />
-          </div>
         </div>
-      </div>
-
-      {/* Transform verification */}
-      <div className="dashboard-card p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2">
-            <Crosshair size={16} className="text-rose-400" /> 俯视坐标验证
-          </h3>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-[var(--color-text-secondary)]">当前 {currentVehicles.length} 辆车 · 每5秒自动刷新</span>
-            <button
-              onClick={doTransform}
-              disabled={!laneId || currentVehicles.length === 0}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              <RefreshCw size={14} /> 立即转换
-            </button>
-          </div>
-        </div>
-        {transformedVehicles.length === 0 ? (
-          <p className="text-[var(--color-text-muted)] text-sm py-4 text-center">
-            {!laneId ? '请先选择车道 ID' : currentVehicles.length === 0 ? '等待车辆检测数据...' : '转换中...'}
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-[var(--color-border-card)] text-[var(--color-text-secondary)] text-xs uppercase tracking-wider">
-                  <th className="py-2 px-3">Track ID</th>
-                  <th className="py-2 px-3">类别</th>
-                  <th className="py-2 px-3">摄像头坐标</th>
-                  <th className="py-2 px-3">俯视坐标</th>
-                  <th className="py-2 px-3">状态</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#222328]/50">
-                {transformedVehicles.map((v: any, i: number) => (
-                  <tr key={i} className="hover:hover:bg-gray-100 dark:hover:bg-[#1C1E24]/40 transition-colors">
-                    <td className="py-2 px-3 font-mono text-blue-400">#{v.id}</td>
-                    <td className="py-2 px-3 text-gray-300 capitalize">{v.class}</td>
-                    <td className="py-2 px-3 font-mono text-[var(--color-text-secondary)]">
-                      ({v.camera[0].toFixed(0)}, {v.camera[1].toFixed(0)})
-                    </td>
-                    <td className="py-2 px-3 font-mono text-emerald-400">
-                      {v.world ? `(${v.world[0].toFixed(1)}, ${v.world[1].toFixed(1)})` : '-'}
-                    </td>
-                    <td className="py-2 px-3">
-                      {v.world ? (
-                        <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded">已变换</span>
-                      ) : (
-                        <span className="text-xs bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded">无标定</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Existing calibrations */}
-      <div className="dashboard-card p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2">
-            <RefreshCw size={16} className="text-blue-400" /> 已标定车道
-          </h3>
-          <button onClick={loadConfigs} className="text-xs text-blue-400 hover:text-blue-300 transition-colors">刷新</button>
-        </div>
-        {Object.keys(calibratedLanes).length === 0 ? (
-          <p className="text-[var(--color-text-muted)] text-sm py-4 text-center">暂无标定数据</p>
-        ) : (
-          <div className="space-y-3">
-            {Object.entries(calibratedLanes).map(([cid, lanes]) =>
-              lanes.map((lid: string) => (
-                <div key={`${cid}/${lid}`} className="flex items-center justify-between bg-white/90 dark:bg-[#1C1C22]/90 border border-[var(--color-border-card)] rounded-xl px-4 py-3 hover:border-[var(--color-border-card)] transition-colors">
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm font-mono text-blue-400">{cid}</span>
-                    <span className="text-xs text-[var(--color-text-muted)]">/</span>
-                    <span className="text-sm font-semibold text-gray-900 dark:text-gray-200">{lid}</span>
-                  </div>
-                  <button onClick={() => handleDelete(cid, lid)} className="text-rose-500/80 hover:text-rose-400 hover:bg-rose-500/10 p-1.5 rounded-lg transition-colors">
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
