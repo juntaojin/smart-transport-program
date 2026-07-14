@@ -12,3 +12,4 @@ logs/*.log
 !logs/.gitkeep
 *.egg-info/
 frontend/node_modules/
+secrets/

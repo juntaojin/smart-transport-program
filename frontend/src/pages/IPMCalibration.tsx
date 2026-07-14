@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import simpleheat, { type SimpleHeat } from 'simpleheat';
 import { DashboardWebSocket, type FrameMeta } from '../services/ws';
-import { streamAPI, anomalyAPI } from '../services/api';
-import { MapPin, Trash2, Check, RefreshCw, Crosshair, Move, Maximize2, X } from 'lucide-react';
+import { streamAPI, anomalyAPI, trafficAnalysisAPI } from '../services/api';
+import { MapPin, Trash2, Check, RefreshCw, Crosshair, Move, Maximize2, X, Download, BrainCircuit } from 'lucide-react';
 import roadModelV8 from '../assets/roadModelV8';
 
 interface Point { x: number; y: number }
@@ -48,11 +48,49 @@ interface HeatmapSample {
   updatedAt: number;
 }
 
+interface GenerationFrame {
+  elapsed: number;
+  vehicles: any[];
+}
+
+interface TrafficAnalysisResult {
+  metrics: {
+    duration_ms: number;
+    frame_count: number;
+    capacity: number;
+    current_count: number;
+    average_count: number;
+    maximum_count: number;
+    two_or_more_ratio: number;
+    full_capacity_ratio: number;
+    first_5s_average: number;
+    last_5s_average: number;
+    trend: string;
+    level: string;
+    score: number;
+  };
+  report: {
+    overall_level: string;
+    score: number;
+    confidence: number;
+    trend: string;
+    summary: string;
+    evidence: string[];
+    recommendations: string[];
+    limitations: string[];
+  };
+  source: 'deepseek-v4' | 'rule' | 'rule_fallback';
+  llm_error?: string | null;
+}
+
+type GenerationStatus = 'idle' | 'recording' | 'replaying';
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
 const ROAD_MODEL = roadModelV8;
 const WORLD_WIDTH = ROAD_MODEL.metadata.extent.width;
 const WORLD_HEIGHT = ROAD_MODEL.metadata.extent.height;
 const WORLD_DISPLAY_SCALE = 1.6;
+const MAX_RECORDING_DURATION = 15000;
 const DEFAULT_HEATMAP_CONFIG: HeatmapConfig = {
   radius: 46,
   blur: 52,
@@ -87,6 +125,46 @@ const createCanvasElement = (width: number, height: number) => {
   canvas.width = width;
   canvas.height = height;
   return canvas;
+};
+
+const renderAnimatedHeatmapCanvas = (
+  source: HTMLCanvasElement,
+  animated: HTMLCanvasElement,
+  time: number,
+) => {
+  const ctx = animated.getContext('2d');
+  if (!ctx) return;
+
+  ctx.clearRect(0, 0, animated.width, animated.height);
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.imageSmoothingEnabled = true;
+  ctx.filter = 'blur(0.45px) saturate(1.06)';
+
+  const bandHeight = Math.max(3, Math.round(DEFAULT_HEATMAP_CONFIG.animationBandHeight * DEFAULT_HEATMAP_CONFIG.internalScale));
+  const shift = DEFAULT_HEATMAP_CONFIG.animationShift * DEFAULT_HEATMAP_CONFIG.internalScale;
+  const phase = time * 0.001;
+  for (let y = 0; y < source.height; y += bandHeight) {
+    const height = Math.min(bandHeight + 2, source.height - y);
+    const edgeWave = Math.sin(y * 0.036 + phase * 2.1) + Math.sin(y * 0.017 - phase * 1.45) * 0.55;
+    const dx = edgeWave * shift;
+    const dy = Math.sin(y * 0.029 + phase * 1.7) * 1.2 - Math.max(0, 1 - y / source.height) * 1.5;
+    const stretch = 1 + Math.sin(y * 0.022 - phase * 1.2) * 0.006;
+    ctx.drawImage(source, 0, y, source.width, height, dx, y + dy, source.width * stretch, height + 1);
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.1 + (Math.sin(phase * 2.4) + 1) * 0.025;
+  ctx.filter = 'blur(2px)';
+  for (let y = 0; y < source.height; y += bandHeight * 2) {
+    const height = Math.min(bandHeight * 2, source.height - y);
+    const dx = Math.cos(y * 0.021 + phase * 1.6) * shift * 0.55;
+    const dy = Math.sin(y * 0.018 - phase * 1.9) * 1.6 - 1;
+    ctx.drawImage(source, 0, y, source.width, height, dx, y + dy, source.width, height);
+  }
+  ctx.restore();
 };
 
 async function ipmRequest(path: string, options: RequestInit = {}) {
@@ -133,8 +211,17 @@ export default function IPMCalibration() {
   const [activeRtspDevices, setActiveRtspDevices] = useState<string[]>([]);
   const [videoAspectRatio, setVideoAspectRatio] = useState('16 / 9');
   const [isWorldFullscreen, setIsWorldFullscreen] = useState(false);
-  const [isContinuousTransforming, setIsContinuousTransforming] = useState(false);
-  const [isContinuousHeatmapRendering, setIsContinuousHeatmapRendering] = useState(false);
+  const [isHeatmapMode, setIsHeatmapMode] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState<GenerationStatus>('idle');
+  const [generationElapsed, setGenerationElapsed] = useState(0);
+  const [recordingTotalElapsed, setRecordingTotalElapsed] = useState(0);
+  const [recordedFrameCount, setRecordedFrameCount] = useState(0);
+  const [isExportingVideo, setIsExportingVideo] = useState(false);
+  const [videoExportProgress, setVideoExportProgress] = useState(0);
+  const [isAnalyzingTraffic, setIsAnalyzingTraffic] = useState(false);
+  const [trafficAnalysis, setTrafficAnalysis] = useState<TrafficAnalysisResult | null>(null);
+  const recordedFramesRef = useRef<GenerationFrame[]>([]);
+  const sessionHeatmapModeRef = useRef(false);
   const vehicleDotsRef = useRef<any[]>([]);
   vehicleDotsRef.current = transformedVehicles;
 
@@ -148,7 +235,6 @@ export default function IPMCalibration() {
   const heatmapSamplesRef = useRef<HeatmapSample[]>([]);
   const heatmapVehicleCacheRef = useRef<Map<string, HeatmapVehicleCache>>(new Map());
   const heatmapLastUpdateRef = useRef(Date.now());
-  const heatmapRenderBusyRef = useRef(false);
   const heatmapVisibleRef = useRef(false);
   const heatmapAnimationFrameRef = useRef<number | null>(null);
   const heatmapLastAnimationRef = useRef(0);
@@ -229,7 +315,12 @@ export default function IPMCalibration() {
   const clearCameraMarks = useCallback(() => {
     setCameraPoints([]);
     setTransformedVehicles([]);
-    setIsContinuousHeatmapRendering(false);
+    setGenerationStatus('idle');
+    setGenerationElapsed(0);
+    setRecordingTotalElapsed(0);
+    setRecordedFrameCount(0);
+    recordedFramesRef.current = [];
+    setTrafficAnalysis(null);
     clearHeatmapBuffers();
   }, [clearHeatmapBuffers]);
 
@@ -871,9 +962,8 @@ export default function IPMCalibration() {
     }
   }, [cameraId, laneId, currentVehicles, cameraPoints]);
 
-  const toggleContinuousTransform = () => {
-    setIsContinuousTransforming(prev => !prev);
-  };
+  const doTransformRef = useRef(doTransform);
+  doTransformRef.current = doTransform;
 
   const redrawWorldCanvases = useCallback(() => {
     drawWorldCanvas(worldCanvasRef.current);
@@ -891,39 +981,7 @@ export default function IPMCalibration() {
       heatmapAnimatedRef.current = createCanvasElement(source.width, source.height);
     }
     const animated = heatmapAnimatedRef.current;
-    const ctx = animated.getContext('2d');
-    if (!ctx) return;
-
-    ctx.clearRect(0, 0, animated.width, animated.height);
-    ctx.save();
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.imageSmoothingEnabled = true;
-    ctx.filter = 'blur(0.45px) saturate(1.06)';
-
-    const bandHeight = Math.max(3, Math.round(DEFAULT_HEATMAP_CONFIG.animationBandHeight * DEFAULT_HEATMAP_CONFIG.internalScale));
-    const shift = DEFAULT_HEATMAP_CONFIG.animationShift * DEFAULT_HEATMAP_CONFIG.internalScale;
-    const phase = time * 0.001;
-    for (let y = 0; y < source.height; y += bandHeight) {
-      const height = Math.min(bandHeight + 2, source.height - y);
-      const edgeWave = Math.sin(y * 0.036 + phase * 2.1) + Math.sin(y * 0.017 - phase * 1.45) * 0.55;
-      const dx = edgeWave * shift;
-      const dy = Math.sin(y * 0.029 + phase * 1.7) * 1.2 - Math.max(0, 1 - y / source.height) * 1.5;
-      const stretch = 1 + Math.sin(y * 0.022 - phase * 1.2) * 0.006;
-      ctx.drawImage(source, 0, y, source.width, height, dx, y + dy, source.width * stretch, height + 1);
-    }
-    ctx.restore();
-
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = 0.1 + (Math.sin(phase * 2.4) + 1) * 0.025;
-    ctx.filter = 'blur(2px)';
-    for (let y = 0; y < source.height; y += bandHeight * 2) {
-      const height = Math.min(bandHeight * 2, source.height - y);
-      const dx = Math.cos(y * 0.021 + phase * 1.6) * shift * 0.55;
-      const dy = Math.sin(y * 0.018 - phase * 1.9) * 1.6 - 1;
-      ctx.drawImage(source, 0, y, source.width, height, dx, y + dy, source.width, height);
-    }
-    ctx.restore();
+    renderAnimatedHeatmapCanvas(source, animated, time);
   }, []);
 
   const ensureHeatmapCanvases = useCallback(() => {
@@ -1062,16 +1120,12 @@ export default function IPMCalibration() {
     redrawWorldCanvases();
   }, [ensureHeatmapCanvases, redrawWorldCanvases, renderAnimatedHeatmapLayer]);
 
-  const renderHeatmapOnce = useCallback(async () => {
-    if (heatmapRenderBusyRef.current) return;
-    heatmapRenderBusyRef.current = true;
-    try {
-      const transformed = await doTransform();
-      updateHeatmapLayer(transformed);
-    } finally {
-      heatmapRenderBusyRef.current = false;
-    }
-  }, [doTransform, updateHeatmapLayer]);
+  const generateOnce = useCallback(async () => {
+    if (generationStatus !== 'idle') return;
+    clearHeatmapBuffers();
+    const transformed = await doTransform();
+    if (isHeatmapMode) updateHeatmapLayer(transformed);
+  }, [clearHeatmapBuffers, doTransform, generationStatus, isHeatmapMode, updateHeatmapLayer]);
 
   useEffect(() => {
     let stopped = false;
@@ -1096,24 +1150,360 @@ export default function IPMCalibration() {
     };
   }, [redrawWorldCanvases, renderAnimatedHeatmapLayer]);
 
-  const toggleContinuousHeatmapRendering = () => {
-    setIsContinuousHeatmapRendering(prev => !prev);
+  const toggleVisualizationMode = () => {
+    if (generationStatus !== 'idle') return;
+    clearHeatmapBuffers();
+    setIsHeatmapMode(prev => !prev);
+    redrawWorldCanvases();
   };
 
-  // Continuous transform mode mirrors the one-shot transform every second.
-  useEffect(() => {
-    if (!isContinuousTransforming) return;
-    doTransform();
-    const t = setInterval(() => doTransform(), 1000);
-    return () => clearInterval(t);
-  }, [doTransform, isContinuousTransforming]);
+  const toggleContinuousGeneration = () => {
+    if (generationStatus === 'idle') {
+      sessionHeatmapModeRef.current = isHeatmapMode;
+      recordedFramesRef.current = [];
+      setRecordedFrameCount(0);
+      setGenerationElapsed(0);
+      setRecordingTotalElapsed(0);
+      setTrafficAnalysis(null);
+      clearHeatmapBuffers();
+      setGenerationStatus('recording');
+      return;
+    }
+    if (generationStatus === 'recording' && recordedFramesRef.current.length > 0) {
+      setGenerationElapsed(0);
+      setGenerationStatus('replaying');
+      return;
+    }
+    setGenerationStatus('idle');
+  };
 
+  const getReplaySnapshot = () => {
+    const recordedFrames = recordedFramesRef.current;
+    if (recordedFrames.length === 0) return [];
+    const firstElapsed = recordedFrames[0].elapsed;
+    return recordedFrames.map(frame => ({
+      elapsed: Math.max(0, frame.elapsed - firstElapsed),
+      vehicles: frame.vehicles.map(vehicle => ({
+        ...vehicle,
+        camera: Array.isArray(vehicle.camera) ? [...vehicle.camera] : vehicle.camera,
+        world: Array.isArray(vehicle.world) ? [...vehicle.world] : vehicle.world,
+      })),
+    }));
+  };
+
+  const exportReplayVideo = async () => {
+    const frames = getReplaySnapshot();
+    if (frames.length === 0) {
+      setMessage({ type: 'err', text: '暂无可导出的视频回放' });
+      return;
+    }
+    if (typeof MediaRecorder === 'undefined') {
+      setMessage({ type: 'err', text: '当前浏览器不支持视频导出，请使用最新版 Chrome 或 Edge' });
+      return;
+    }
+    const mimeType = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+    ].find(type => MediaRecorder.isTypeSupported(type));
+    if (!mimeType) {
+      setMessage({ type: 'err', text: '当前浏览器没有可用的 WebM 视频编码器' });
+      return;
+    }
+
+    setIsExportingVideo(true);
+    setVideoExportProgress(0);
+    const exportCanvas = createCanvasElement(WORLD_WIDTH, WORLD_HEIGHT);
+    const ctx = exportCanvas.getContext('2d');
+    const roadBase = getRoadBaseCanvas();
+    const exportHeatWidth = Math.max(1, Math.round(WORLD_WIDTH * DEFAULT_HEATMAP_CONFIG.internalScale));
+    const exportHeatHeight = Math.max(1, Math.round(WORLD_HEIGHT * DEFAULT_HEATMAP_CONFIG.internalScale));
+    const exportHeatCanvas = createCanvasElement(exportHeatWidth, exportHeatHeight);
+    const exportAnimatedHeatCanvas = createCanvasElement(exportHeatWidth, exportHeatHeight);
+    const exportHeat = simpleheat(exportHeatCanvas)
+      .radius(
+        Math.max(1, DEFAULT_HEATMAP_CONFIG.radius * DEFAULT_HEATMAP_CONFIG.internalScale),
+        Math.max(1, DEFAULT_HEATMAP_CONFIG.blur * DEFAULT_HEATMAP_CONFIG.internalScale),
+      )
+      .gradient(HEATMAP_GRADIENT)
+      .max(DEFAULT_HEATMAP_CONFIG.maxHeat);
+    let exportHeatSamples: HeatmapSample[] = [];
+    const exportVehicleCache = new Map<string, HeatmapVehicleCache>();
+    let exportHeatLastUpdate = 0;
+    const heatmapMode = sessionHeatmapModeRef.current;
+    const durationMs = Math.max(500, frames.at(-1)?.elapsed ?? 0);
+    let lastAppliedFrame = -1;
+    let stream: MediaStream | null = null;
+
+    const updateExportHeatmap = (vehicles: any[], now: number) => {
+      const elapsedSteps = Math.max(1, (now - exportHeatLastUpdate) / DEFAULT_HEATMAP_CONFIG.updateInterval);
+      const decay = DEFAULT_HEATMAP_CONFIG.decayFactor ** elapsedSteps;
+      exportHeatSamples = exportHeatSamples
+        .map(sample => ({ ...sample, value: sample.value * decay }))
+        .filter(sample => sample.value >= DEFAULT_HEATMAP_CONFIG.minSampleValue && now - sample.updatedAt <= DEFAULT_HEATMAP_CONFIG.sampleLifetime);
+      exportHeatLastUpdate = now;
+
+      const nextSamples = exportHeatSamples;
+      for (const vehicle of getValidHeatmapVehicles(vehicles)) {
+        const previous = exportVehicleCache.get(vehicle.id);
+        const alpha = DEFAULT_HEATMAP_CONFIG.smoothingAlpha;
+        const x = previous ? alpha * vehicle.x + (1 - alpha) * previous.x : vehicle.x;
+        const y = previous ? alpha * vehicle.y + (1 - alpha) * previous.y : vehicle.y;
+        const distance = previous ? Math.hypot(x - previous.x, y - previous.y) : 0;
+        const steps = previous ? Math.max(1, Math.ceil(distance / DEFAULT_HEATMAP_CONFIG.trailStep)) : 1;
+
+        for (let step = 1; step <= steps; step++) {
+          const progress = step / steps;
+          const px = previous ? previous.x + (x - previous.x) * progress : x;
+          const py = previous ? previous.y + (y - previous.y) * progress : y;
+          const trailWeight = previous && step < steps ? 0.62 : 1;
+          nextSamples.push({
+            x: px,
+            y: py,
+            value: Math.min(DEFAULT_HEATMAP_CONFIG.maxHeat, DEFAULT_HEATMAP_CONFIG.intensity * trailWeight),
+            updatedAt: now,
+          });
+        }
+        exportVehicleCache.set(vehicle.id, { x, y, lastSeen: now });
+      }
+
+      for (const [id, cache] of exportVehicleCache) {
+        if (now - cache.lastSeen > DEFAULT_HEATMAP_CONFIG.vehicleTimeout) exportVehicleCache.delete(id);
+      }
+
+      exportHeatSamples = compactHeatmapSamples(nextSamples);
+      if (exportHeatSamples.length > DEFAULT_HEATMAP_CONFIG.maxSamples) {
+        exportHeatSamples.splice(0, exportHeatSamples.length - DEFAULT_HEATMAP_CONFIG.maxSamples);
+      }
+      exportHeat
+        .data(exportHeatSamples.map(sample => [
+          sample.x * DEFAULT_HEATMAP_CONFIG.internalScale,
+          sample.y * DEFAULT_HEATMAP_CONFIG.internalScale,
+          Math.min(DEFAULT_HEATMAP_CONFIG.maxHeat, sample.value),
+        ]))
+        .max(DEFAULT_HEATMAP_CONFIG.maxHeat)
+        .draw(DEFAULT_HEATMAP_CONFIG.minVisibleHeat);
+    };
+
+    const drawFrame = (elapsed: number) => {
+      if (!ctx) return;
+      while (lastAppliedFrame + 1 < frames.length && frames[lastAppliedFrame + 1].elapsed <= elapsed) {
+        lastAppliedFrame += 1;
+        if (heatmapMode) {
+          updateExportHeatmap(frames[lastAppliedFrame].vehicles, frames[lastAppliedFrame].elapsed);
+        }
+      }
+
+      ctx.clearRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+      if (roadBase) ctx.drawImage(roadBase, 0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+      else drawRoadModelBackground(ctx, WORLD_WIDTH, WORLD_HEIGHT);
+
+      const currentIndex = Math.max(0, lastAppliedFrame);
+      const currentFrame = frames[currentIndex];
+      if (heatmapMode) {
+        renderAnimatedHeatmapCanvas(exportHeatCanvas, exportAnimatedHeatCanvas, elapsed);
+        ctx.save();
+        ctx.globalAlpha = DEFAULT_HEATMAP_CONFIG.opacity;
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(exportAnimatedHeatCanvas, 0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+        ctx.restore();
+      } else if (currentFrame) {
+        for (const vehicle of currentFrame.vehicles) {
+          if (!Array.isArray(vehicle.world) || vehicle.world.length < 2) continue;
+          const [x, y] = vehicle.world;
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          ctx.beginPath();
+          ctx.arc(x, y, 8, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(239, 68, 68, 0.88)';
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 11px ui-monospace, monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(`#${vehicle.id ?? '?'}`, x, y - 13);
+        }
+      }
+
+      ctx.save();
+      const overlay = ctx.createLinearGradient(0, 0, 0, 58);
+      overlay.addColorStop(0, 'rgba(2, 6, 23, 0.88)');
+      overlay.addColorStop(1, 'rgba(2, 6, 23, 0.16)');
+      ctx.fillStyle = overlay;
+      ctx.fillRect(0, 0, WORLD_WIDTH, 58);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 18px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(`智慧交通沙盘 · ${heatmapMode ? '车辆活动热力图' : '车辆位置回放'}`, 18, 25);
+      ctx.font = '13px system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(226, 232, 240, 0.95)';
+      ctx.fillText(`${cameraId} / ${laneId}    ${(elapsed / 1000).toFixed(1)}s / ${(durationMs / 1000).toFixed(1)}s    当前 ${currentFrame?.vehicles.length ?? 0} 辆`, 18, 47);
+      ctx.restore();
+    };
+
+    try {
+      if (!ctx || typeof exportCanvas.captureStream !== 'function') throw new Error('浏览器不支持 Canvas 视频录制');
+      drawFrame(0);
+      stream = exportCanvas.captureStream(30);
+      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 4_000_000 });
+      const chunks: BlobPart[] = [];
+      const videoReady = new Promise<Blob>((resolve, reject) => {
+        recorder.ondataavailable = event => { if (event.data.size > 0) chunks.push(event.data); };
+        recorder.onerror = event => reject(new Error((event as any).error?.message || '视频编码失败'));
+        recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
+      });
+      recorder.start(250);
+      const startedAt = performance.now();
+      await new Promise<void>(resolve => {
+        const render = (now: number) => {
+          const elapsed = Math.min(durationMs, now - startedAt);
+          drawFrame(elapsed);
+          setVideoExportProgress(Math.round(elapsed / durationMs * 100));
+          if (elapsed >= durationMs) resolve();
+          else requestAnimationFrame(render);
+        };
+        requestAnimationFrame(render);
+      });
+      await new Promise(resolve => window.setTimeout(resolve, 120));
+      recorder.stop();
+      const video = await videoReady;
+      const url = URL.createObjectURL(video);
+      const link = document.createElement('a');
+      const safeCameraId = cameraId.replace(/[^a-zA-Z0-9_-]/g, '_') || 'camera';
+      const safeLaneId = laneId.replace(/[^a-zA-Z0-9_-]/g, '_') || 'lane';
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      link.href = url;
+      link.download = `traffic-replay_${safeCameraId}_${safeLaneId}_${timestamp}.webm`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setMessage({ type: 'ok', text: `已导出 ${(durationMs / 1000).toFixed(1)} 秒 WebM 回放视频` });
+    } catch (error: any) {
+      setMessage({ type: 'err', text: error?.message || '视频导出失败' });
+    } finally {
+      stream?.getTracks().forEach(track => track.stop());
+      setIsExportingVideo(false);
+      setVideoExportProgress(0);
+    }
+  };
+
+  const analyzeRecentTraffic = async () => {
+    const frames = getReplaySnapshot();
+    if (frames.length === 0) {
+      setMessage({ type: 'err', text: '请先使用持续生成记录车辆数据' });
+      return;
+    }
+    setIsAnalyzingTraffic(true);
+    try {
+      const response = await trafficAnalysisAPI.analyze({
+        camera_id: cameraId,
+        lane_id: laneId,
+        capacity: 3,
+        frames: frames.map(frame => ({
+          timestamp_ms: Math.round(frame.elapsed),
+          vehicles: frame.vehicles.map(vehicle => ({ id: vehicle.id, class: vehicle.class, world: vehicle.world })),
+        })),
+      });
+      setTrafficAnalysis(response.data as TrafficAnalysisResult);
+      setMessage({
+        type: 'ok',
+        text: response.data?.source === 'deepseek-v4' ? 'DeepSeek V4 拥堵分析已完成' : '规则报告已生成（DeepSeek 当前不可用）',
+      });
+    } catch (error: any) {
+      setMessage({ type: 'err', text: error?.message || '拥堵分析失败' });
+    } finally {
+      setIsAnalyzingTraffic(false);
+    }
+  };
+
+  // Keep recording until the user stops. Only the latest 15 seconds remain in
+  // the rolling playback buffer. The chosen mode is fixed for the session.
   useEffect(() => {
-    if (!isContinuousHeatmapRendering) return;
-    renderHeatmapOnce();
-    const t = setInterval(() => renderHeatmapOnce(), DEFAULT_HEATMAP_CONFIG.updateInterval);
-    return () => clearInterval(t);
-  }, [renderHeatmapOnce, isContinuousHeatmapRendering]);
+    if (generationStatus !== 'recording') return;
+    let stopped = false;
+    let busy = false;
+    const startedAt = performance.now();
+
+    const captureFrame = async () => {
+      if (stopped || busy) return;
+      busy = true;
+      try {
+        const vehicles = await doTransformRef.current();
+        if (stopped) return;
+        const elapsed = performance.now() - startedAt;
+        const frame = {
+          elapsed,
+          vehicles: vehicles.map(vehicle => ({
+            ...vehicle,
+            camera: Array.isArray(vehicle.camera) ? [...vehicle.camera] : vehicle.camera,
+            world: Array.isArray(vehicle.world) ? [...vehicle.world] : vehicle.world,
+          })),
+        };
+        recordedFramesRef.current.push(frame);
+        const cutoff = elapsed - MAX_RECORDING_DURATION;
+        if (cutoff > 0) {
+          recordedFramesRef.current = recordedFramesRef.current.filter(recordedFrame => recordedFrame.elapsed >= cutoff);
+        }
+        const bufferDuration = recordedFramesRef.current.length > 1
+          ? elapsed - recordedFramesRef.current[0].elapsed
+          : 0;
+        setRecordedFrameCount(recordedFramesRef.current.length);
+        setRecordingTotalElapsed(elapsed);
+        setGenerationElapsed(bufferDuration);
+        if (sessionHeatmapModeRef.current) updateHeatmapLayer(frame.vehicles);
+      } finally {
+        busy = false;
+      }
+    };
+
+    captureFrame();
+    const captureTimer = window.setInterval(captureFrame, DEFAULT_HEATMAP_CONFIG.updateInterval);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(captureTimer);
+    };
+  }, [generationStatus, updateHeatmapLayer]);
+
+  // Play every recorded coordinate snapshot back with its original timing.
+  useEffect(() => {
+    if (generationStatus !== 'replaying') return;
+    const recordedFrames = recordedFramesRef.current;
+    if (recordedFrames.length === 0) {
+      setGenerationStatus('idle');
+      return;
+    }
+    const firstElapsed = recordedFrames[0].elapsed;
+    const frames = recordedFrames.map(frame => ({
+      ...frame,
+      elapsed: frame.elapsed - firstElapsed,
+    }));
+    recordedFramesRef.current = frames;
+
+    clearHeatmapBuffers();
+    if (sessionHeatmapModeRef.current) {
+      vehicleDotsRef.current = [];
+      setTransformedVehicles([]);
+    }
+    const timers: number[] = [];
+    for (const frame of frames) {
+      timers.push(window.setTimeout(() => {
+        vehicleDotsRef.current = frame.vehicles;
+        setTransformedVehicles(frame.vehicles);
+        setGenerationElapsed(frame.elapsed);
+        if (sessionHeatmapModeRef.current) updateHeatmapLayer(frame.vehicles);
+      }, frame.elapsed));
+    }
+    timers.push(window.setTimeout(() => {
+      setGenerationStatus('idle');
+      setMessage({ type: 'ok', text: `已完成 ${(frames.at(-1)!.elapsed / 1000).toFixed(1)} 秒回放` });
+    }, frames.at(-1)!.elapsed + DEFAULT_HEATMAP_CONFIG.updateInterval));
+
+    return () => timers.forEach(timer => window.clearTimeout(timer));
+  }, [clearHeatmapBuffers, generationStatus, updateHeatmapLayer]);
 
   return (
     <div className="space-y-6">
@@ -1249,45 +1639,126 @@ export default function IPMCalibration() {
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <span className="text-xs text-[var(--color-text-secondary)]">当前 {currentVehicles.length} 辆车</span>
                 <button
-                  onClick={doTransform}
-                  disabled={isContinuousTransforming || !laneId || currentVehicles.length === 0}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  type="button"
+                  role="switch"
+                  aria-checked={isHeatmapMode}
+                  onClick={toggleVisualizationMode}
+                  disabled={generationStatus !== 'idle'}
+                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-[var(--color-border-card)] bg-white/70 dark:bg-[#17191f] text-[var(--color-text-secondary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="关闭显示车辆红点，开启渲染热力图"
                 >
-                  <RefreshCw size={12} /> 开始转换
+                  <span className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${isHeatmapMode ? 'bg-amber-500' : 'bg-slate-500'}`}>
+                    <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${isHeatmapMode ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+                  </span>
+                  {isHeatmapMode ? '热力图' : '车辆位置'}
                 </button>
                 <button
-                  onClick={toggleContinuousTransform}
-                  disabled={!isContinuousTransforming && (!laneId || currentVehicles.length === 0)}
+                  onClick={generateOnce}
+                  disabled={generationStatus !== 'idle' || !laneId || currentVehicles.length === 0}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Crosshair size={12} /> 生成一次
+                </button>
+                <button
+                  onClick={toggleContinuousGeneration}
+                  disabled={generationStatus === 'idle' && (!laneId || currentVehicles.length === 0)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
-                    isContinuousTransforming
+                    generationStatus !== 'idle'
                       ? 'bg-rose-500/15 text-rose-400 border-rose-500/30 hover:bg-rose-500/25'
                       : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25'
                   }`}
                 >
-                  <RefreshCw size={12} className={isContinuousTransforming ? 'animate-spin' : ''} />
-                  {isContinuousTransforming ? '结束转换' : '开始连续转换'}
+                  <RefreshCw size={12} className={generationStatus !== 'idle' ? 'animate-spin' : ''} />
+                  {generationStatus === 'recording' ? '停止并回放' : generationStatus === 'replaying' ? '停止回放' : '持续生成'}
                 </button>
                 <button
-                  onClick={renderHeatmapOnce}
-                  disabled={isContinuousHeatmapRendering || !laneId || currentVehicles.length === 0}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  type="button"
+                  onClick={exportReplayVideo}
+                  disabled={recordedFrameCount === 0 || isExportingVideo}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-violet-500/15 text-violet-400 border border-violet-500/30 hover:bg-violet-500/25 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  title="将最近 15 秒白板回放导出为 WebM 视频"
                 >
-                  <Crosshair size={12} /> 渲染一次热力图
+                  <Download size={12} /> {isExportingVideo ? `生成视频 ${videoExportProgress}%` : '导出视频'}
                 </button>
                 <button
-                  onClick={toggleContinuousHeatmapRendering}
-                  disabled={!isContinuousHeatmapRendering && (!laneId || currentVehicles.length === 0)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
-                    isContinuousHeatmapRendering
-                      ? 'bg-rose-500/15 text-rose-400 border-rose-500/30 hover:bg-rose-500/25'
-                      : 'bg-amber-500/15 text-amber-400 border-amber-500/30 hover:bg-amber-500/25'
-                  }`}
+                  type="button"
+                  onClick={analyzeRecentTraffic}
+                  disabled={recordedFrameCount === 0 || isAnalyzingTraffic}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/25 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  title="使用最近 15 秒车辆数量生成 DeepSeek V4 拥堵报告"
                 >
-                  <RefreshCw size={12} className={isContinuousHeatmapRendering ? 'animate-spin' : ''} />
-                  {isContinuousHeatmapRendering ? '结束渲染热力图' : '开始持续渲染热力图'}
+                  <BrainCircuit size={12} className={isAnalyzingTraffic ? 'animate-pulse' : ''} />
+                  {isAnalyzingTraffic ? '分析中...' : 'AI 拥堵分析'}
                 </button>
               </div>
             </div>
+            {(generationStatus !== 'idle' || recordedFrameCount > 0) && (
+              <div className="mb-4 rounded-lg border border-[var(--color-border-card)] bg-gray-50/70 dark:bg-[#15171c]/70 px-3 py-2">
+                <div className="mb-1.5 flex items-center justify-between text-xs">
+                  <span className={generationStatus === 'recording' ? 'text-rose-400' : generationStatus === 'replaying' ? 'text-blue-400' : 'text-[var(--color-text-secondary)]'}>
+                    {generationStatus === 'recording' ? '正在持续记录（保留最近 15 秒）' : generationStatus === 'replaying' ? '正在回放最近 15 秒' : '最近一次记录'}
+                  </span>
+                  <span className="font-mono text-[var(--color-text-secondary)]">
+                    {generationStatus === 'recording' && `已记录 ${(recordingTotalElapsed / 1000).toFixed(1)}s · `}
+                    缓存/回放 {(generationElapsed / 1000).toFixed(1)}s · {recordedFrameCount} 帧
+                  </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-gray-200 dark:bg-[#292c34]">
+                  <div className={`h-full rounded-full transition-[width] ${generationStatus === 'replaying' ? 'bg-blue-500' : 'bg-rose-500'}`} style={{ width: `${Math.min(100, generationElapsed / MAX_RECORDING_DURATION * 100)}%` }} />
+                </div>
+              </div>
+            )}
+            {trafficAnalysis && (
+              <div className="mb-4 rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <BrainCircuit size={17} className="text-cyan-400" />
+                      <h4 className="text-sm font-semibold text-[var(--color-text-primary)]">沙盘路段拥堵报告</h4>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${trafficAnalysis.source === 'deepseek-v4' ? 'bg-cyan-500/15 text-cyan-400' : 'bg-amber-500/15 text-amber-400'}`}>
+                        {trafficAnalysis.source === 'deepseek-v4' ? 'DeepSeek V4' : '规则兜底'}
+                      </span>
+                    </div>
+                    <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--color-text-secondary)]">{trafficAnalysis.report.summary}</p>
+                  </div>
+                  <div className="flex gap-2 text-center">
+                    <div className="min-w-20 rounded-lg border border-[var(--color-border-card)] bg-white/60 px-3 py-2 dark:bg-[#17191f]/70">
+                      <div className="text-lg font-bold text-cyan-400">{trafficAnalysis.report.score}</div>
+                      <div className="text-[10px] text-[var(--color-text-muted)]">拥堵分数</div>
+                    </div>
+                    <div className="min-w-20 rounded-lg border border-[var(--color-border-card)] bg-white/60 px-3 py-2 dark:bg-[#17191f]/70">
+                      <div className="text-sm font-bold text-amber-400">{trafficAnalysis.report.overall_level}</div>
+                      <div className="mt-1 text-[10px] text-[var(--color-text-muted)]">{trafficAnalysis.report.trend}</div>
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-lg border border-[var(--color-border-card)] p-3 text-xs">
+                    <div className="mb-2 font-semibold text-[var(--color-text-primary)]">数量指标</div>
+                    <div className="space-y-1 text-[var(--color-text-secondary)]">
+                      <div>平均车辆：{trafficAnalysis.metrics.average_count} 辆</div>
+                      <div>最高车辆：{trafficAnalysis.metrics.maximum_count} 辆</div>
+                      <div>满载占比：{Math.round(trafficAnalysis.metrics.full_capacity_ratio * 100)}%</div>
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-[var(--color-border-card)] p-3 text-xs">
+                    <div className="mb-2 font-semibold text-[var(--color-text-primary)]">判断依据</div>
+                    <ul className="space-y-1 text-[var(--color-text-secondary)]">
+                      {trafficAnalysis.report.evidence.slice(0, 3).map((item, index) => <li key={index}>· {item}</li>)}
+                    </ul>
+                  </div>
+                  <div className="rounded-lg border border-[var(--color-border-card)] p-3 text-xs">
+                    <div className="mb-2 font-semibold text-[var(--color-text-primary)]">处置建议</div>
+                    <ul className="space-y-1 text-[var(--color-text-secondary)]">
+                      {trafficAnalysis.report.recommendations.slice(0, 3).map((item, index) => <li key={index}>· {item}</li>)}
+                    </ul>
+                  </div>
+                </div>
+                {trafficAnalysis.llm_error && (
+                  <p className="mt-3 text-[10px] text-amber-400">DeepSeek 未调用：{trafficAnalysis.llm_error}</p>
+                )}
+              </div>
+            )}
             {transformedVehicles.length === 0 ? (
               <p className="text-[var(--color-text-muted)] text-sm py-4 text-center">
                 {!laneId ? '请先选择车道 ID' : currentVehicles.length === 0 ? '等待车辆检测数据...' : '转换中...'}

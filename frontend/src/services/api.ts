@@ -97,3 +97,15 @@ export const anomalyAPI = {
     body: JSON.stringify(deviceId ? { device_id: deviceId } : {}),
   }),
 };
+
+export const trafficAnalysisAPI = {
+  analyze: (payload: {
+    camera_id: string;
+    lane_id: string;
+    capacity?: number;
+    frames: Array<{ timestamp_ms: number; vehicles: any[] }>;
+  }) => request('/traffic-analysis', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+};

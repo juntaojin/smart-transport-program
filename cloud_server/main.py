@@ -18,6 +18,7 @@ from cloud_server.database.connection import engine, Base
 from cloud_server.api.middleware import setup_middleware
 from cloud_server.api.rest_routes import router as rest_router
 from cloud_server.api.ws_routes import router as ws_router
+from cloud_server.api.traffic_analysis_routes import router as traffic_analysis_router
 
 # Import Pipeline and Nodes
 from cloud_server.pipeline.engine import InferencePipeline
@@ -124,6 +125,7 @@ setup_middleware(app)
 # Include Routers
 app.include_router(rest_router)
 app.include_router(ws_router)
+app.include_router(traffic_analysis_router)
 from ipm_service.routes import router as ipm_router
 app.include_router(ipm_router)
 

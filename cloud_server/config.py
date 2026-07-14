@@ -53,6 +53,16 @@ defaults = {
             "device_timeout": 30,
             "data_retention_days": 30,
             "monitor_interval": 5
+        },
+        "traffic_analysis": {
+            "enabled": True,
+            "window_seconds": 15,
+            "camera_capacity": 3,
+            "deepseek_base_url": "https://api.deepseek.com",
+            "deepseek_model": "deepseek-v4-pro",
+            "api_key_env": "DEEPSEEK_API_KEY",
+            "api_key_file": "secrets/deepseek.env",
+            "timeout_seconds": 30,
         }
     }
 }
@@ -149,3 +159,6 @@ CONGESTION_LOW = c_thresh["congestion_low"]
 DEVICE_TIMEOUT = c_thresh["device_timeout"]
 DATA_RETENTION_DAYS = c_thresh["data_retention_days"]
 MONITOR_INTERVAL = c_thresh["monitor_interval"]
+
+# School sand-table congestion analysis and DeepSeek report generation.
+TRAFFIC_ANALYSIS_CONFIG = c_server.get("traffic_analysis", {})

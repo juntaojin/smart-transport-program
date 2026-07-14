@@ -46,6 +46,15 @@ cloud_server:
     device_timeout: 30
     data_retention_days: 30
     monitor_interval: 5
+  traffic_analysis:
+    enabled: true
+    window_seconds: 15
+    camera_capacity: 3
+    deepseek_base_url: https://api.deepseek.com
+    deepseek_model: deepseek-v4-pro
+    api_key_env: DEEPSEEK_API_KEY
+    api_key_file: secrets/deepseek.env
+    timeout_seconds: 30
 ipm_service:
   camera_01:
     num1:
