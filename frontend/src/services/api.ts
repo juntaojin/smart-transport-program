@@ -109,3 +109,12 @@ export const trafficAnalysisAPI = {
     body: JSON.stringify(payload),
   }),
 };
+
+export const edgeAPI = {
+  pendingRegistrations: () => request('/edge/register/pending'),
+  registrationStatus: (deviceId: string) => request(`/edge/register/status/${encodeURIComponent(deviceId)}`),
+  devices: (limit: number = 200) => request(`/edge/devices?limit=${limit}`),
+  revokeDevice: (deviceId: string) => request(`/edge/devices/${encodeURIComponent(deviceId)}`, {
+    method: 'DELETE',
+  }),
+};

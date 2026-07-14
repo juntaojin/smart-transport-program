@@ -351,6 +351,10 @@
         let videoFileLoaded = false;
         let zoomLevel = 1;
         let nativeZoomSupported = false;
+        let streamToken = '';
+        let edgeRegistrationReady = false;
+        let edgeRegistrationPromise = null;
+        let edgeDeviceUid = '';
 
         function updateRtspSelectionState() {
             const checks = rtspCameraChecks();
@@ -400,18 +404,29 @@
         function autoFillServer() {
             const savedAddr = localStorage.getItem('ws_server_addr');
             const savedDevice = localStorage.getItem('ws_device_id');
+            edgeDeviceUid = localStorage.getItem('edge_device_uid') || '';
+            if (!edgeDeviceUid) {
+                edgeDeviceUid = `edge_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+                localStorage.setItem('edge_device_uid', edgeDeviceUid);
+            }
             if (savedAddr) { serverAddr.value = savedAddr; }
             else { serverAddr.value = window.location.host; }
             if (savedDevice) { deviceIdInput.value = savedDevice; }
         }
         autoFillServer();
+        setTimeout(() => { checkEdgeRegistration(); }, 300);
+        deviceIdInput.addEventListener('change', () => {
+            streamToken = '';
+        });
 
         function getWSUrl() {
             const addr = serverAddr.value.trim();
             const deviceId = deviceIdInput.value.trim() || 'cam_01';
             if (!addr) return '';
             const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-            return `${proto}://${addr}/ws/stream/${deviceId}`;
+            const params = new URLSearchParams({ edge_uid: edgeDeviceUid });
+            if (streamToken) params.set('token', streamToken);
+            return `${proto}://${addr}/ws/stream/${encodeURIComponent(deviceId)}?${params.toString()}`;
         }
 
         function getQuality() {
@@ -742,6 +757,7 @@
                 ws.close();
                 ws = null;
             }
+            streamToken = '';
             setStatus('disconnected', '未连接');
         }
 
@@ -753,6 +769,77 @@
         function showWarn(msg) {
             warnMsg.innerHTML = msg;
             warnMsg.style.display = 'block';
+        }
+
+        function getEdgeDeviceInfo() {
+            const selectedCamera = cameraSelect.options[cameraSelect.selectedIndex];
+            const streamDeviceId = deviceIdInput.value.trim() || 'cam_01';
+            return {
+                device_id: edgeDeviceUid,
+                edge_device_uid: edgeDeviceUid,
+                stream_device_id: streamDeviceId,
+                device_name: `${selectedCamera && selectedCamera.text ? selectedCamera.text : 'Edge device'} (${streamDeviceId})`,
+                source_mode: sourceMode === 'video-file' ? 'video_file' : sourceMode,
+                user_agent: navigator.userAgent || ''
+            };
+        }
+
+        async function checkEdgeRegistration() {
+            if (edgeRegistrationReady) return true;
+            if (edgeRegistrationPromise) return edgeRegistrationPromise;
+            edgeRegistrationPromise = (async () => {
+                const apiBase = getApiBase();
+                if (!apiBase) { showWarn('Please enter server address'); return false; }
+                const deviceInfo = getEdgeDeviceInfo();
+                try {
+                    const resp = await fetch(`${apiBase}/api/edge/register/status/${encodeURIComponent(deviceInfo.edge_device_uid)}`);
+                    const result = await resp.json();
+                    if (resp.ok && result.code === 200 && result.data?.allowed) {
+                        edgeRegistrationReady = true;
+                        streamToken = '';
+                        return true;
+                    }
+                } catch (e) {
+                    console.warn('Edge registration status check failed:', e);
+                }
+                return requestStreamToken();
+            })();
+            const ready = await edgeRegistrationPromise;
+            edgeRegistrationPromise = null;
+            return ready;
+        }
+
+        async function requestStreamToken() {
+            const apiBase = getApiBase();
+            if (!apiBase) { showWarn('Please enter server address'); return false; }
+            const deviceInfo = getEdgeDeviceInfo();
+            const resp = await fetch(`${apiBase}/api/edge/register/request`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(deviceInfo)
+            });
+            const result = await resp.json();
+            if (!resp.ok || result.code !== 200) {
+                showWarn('Registration request failed: ' + (result.detail || result.message || resp.status));
+                return false;
+            }
+
+            const verifyCode = window.prompt(`Enter the streaming verification code shown on the system frontend for edge device ${deviceInfo.edge_device_uid} (${deviceInfo.stream_device_id}):`);
+            if (!verifyCode) return false;
+
+            const verifyResp = await fetch(`${apiBase}/api/edge/register/verify`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ request_id: result.data.request_id, code: verifyCode.trim() })
+            });
+            const verifyResult = await verifyResp.json();
+            if (!verifyResp.ok || verifyResult.code !== 200) {
+                showWarn('Verification code is wrong or expired. Please start again.');
+                return false;
+            }
+            streamToken = verifyResult.data.stream_token;
+            edgeRegistrationReady = true;
+            return true;
         }
 
         // ── 推流 ──
@@ -853,7 +940,7 @@
             const selectedCameraIds = rtspCameraChecks().filter(c => c.checked).map(c => c.value);
             if (selectedCameraIds.length === 0) { showWarn('请至少选择一个沙盘摄像头'); return; }
             const apiBase = getApiBase();
-            if (!apiBase) { showWarn('请输入服务器地址'); return; }
+            if (!apiBase) { showWarn('Please enter server address'); return false; }
 
             warnMsg.style.display = 'none';
             setStatus('connecting', '启动中...');
@@ -924,11 +1011,17 @@
             fpsDisplay.textContent = '0 FPS';
         }
 
-        btnStart.addEventListener('click', () => {
+        btnStart.addEventListener('click', async () => {
             if (sourceMode === 'rtsp') { startRtspStream(); return; }
             if (sourceMode === 'camera' && !hasPermission) { requestCameraPermission(); return; }
             if (sourceMode === 'video-file' && !videoFileLoaded) { btnPickVideo.click(); return; }
-            if (!serverAddr.value.trim()) { showWarn('请输入服务器地址'); return; }
+            if (!serverAddr.value.trim()) { showWarn('Please enter server address'); return; }
+            setStatus('connecting', 'Checking registration...');
+            const verified = await checkEdgeRegistration();
+            if (!verified) {
+                setStatus('disconnected', 'Disconnected');
+                return;
+            }
             connectWS();
         });
 

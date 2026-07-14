@@ -15,6 +15,11 @@ from cloud_server.database.connection import async_session
 from cloud_server.database.orm_models import (
     PlateRecord, VehicleStat, ParkingViolation, RoadAnomaly, SystemMetric
 )
+from cloud_server.api.edge_registry import (
+    authorize_edge_stream_for_uid,
+    create_stream_record,
+    finish_stream_record,
+)
 from cloud_server.config import (
     CONGESTION_HIGH, CONGESTION_MEDIUM, DATA_DIR,
 )
@@ -274,10 +279,28 @@ def _process_pipeline_only(pipeline, frame, mode, device_id, fc):
 @router.websocket("/stream/{device_id}")
 async def receive_stream(websocket: WebSocket, device_id: str):
     """Receive edge JPEGs without coupling video delivery to AI latency."""
+    token = websocket.query_params.get("token")
+    edge_device_uid = websocket.query_params.get("edge_uid")
+    token_info = await authorize_edge_stream_for_uid(
+        device_id,
+        token,
+        edge_device_uid,
+        websocket.client.host if websocket.client else None,
+    )
+    if token_info is None:
+        await websocket.close(code=1008, reason="edge device not registered")
+        logger.warning(f"Rejected unregistered edge stream: {device_id}")
+        return
+
     await websocket.accept()
     logger.info(f"Edge streaming device connected: {device_id}")
     reset_anomaly_state(device_id)
     active_devices[device_id] = time.time()
+    stream_record_id = await create_stream_record(
+        device_id,
+        token_info,
+        websocket.client.host if websocket.client else None,
+    )
 
     pipeline = websocket.app.state.pipeline
     inference_event = asyncio.Event()
@@ -413,6 +436,7 @@ async def receive_stream(websocket: WebSocket, device_id: str):
     finally:
         active_devices.pop(device_id, None)
         frame_counters.pop(device_id, None)
+        await finish_stream_record(stream_record_id, received_count)
         inference_state["stopping"] = True
         inference_state["latest_jpeg"] = None
         inference_event.set()

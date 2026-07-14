@@ -10,7 +10,14 @@ import psutil
 
 from cloud_server.database.connection import get_db
 from cloud_server.database.orm_models import (
-    PlateRecord, VehicleStat, ParkingViolation, RoadAnomaly, SystemMetric, ModelConfig
+    PlateRecord, VehicleStat, ParkingViolation, RoadAnomaly, SystemMetric,
+    ModelConfig, EdgeDevice, EdgeStreamRecord,
+)
+from cloud_server.api.edge_registry import (
+    create_registration_request,
+    get_edge_device_status,
+    list_pending_requests,
+    verify_registration_request,
 )
 from cloud_server.config import BASE_DIR, DATA_DIR
 from cloud_server.runtime_config import (
@@ -260,6 +267,111 @@ async def reset_anomaly_detector(payload: dict | None = None):
     device_id = (payload or {}).get("device_id")
     reset_anomaly_state(device_id)
     logger.info(f"[AnomalyDetection] Reset state requested for device={device_id or 'ALL'}")
+    return {"code": 200, "message": "success", "data": {"device_id": device_id}}
+
+
+# --- Edge Device Registration APIs ---
+
+@router.post("/edge/register/request")
+async def request_edge_registration(payload: dict, request: Request):
+    stream_device_id = str(payload.get("stream_device_id") or payload.get("device_id") or "").strip()
+    edge_device_uid = str(payload.get("edge_device_uid") or stream_device_id).strip()
+    if not edge_device_uid:
+        raise HTTPException(status_code=400, detail="edge_device_uid is required")
+
+    item = create_registration_request(
+        {
+            "device_id": edge_device_uid,
+            "edge_device_uid": edge_device_uid,
+            "stream_device_id": stream_device_id or edge_device_uid,
+            "device_name": str(payload.get("device_name") or edge_device_uid).strip(),
+            "source_mode": str(payload.get("source_mode") or "camera").strip(),
+            "user_agent": str(payload.get("user_agent") or "").strip(),
+        },
+        request.client.host if request.client else None,
+    )
+    logger.info(f"Edge registration requested: edge={edge_device_uid}, stream={stream_device_id}, code={item['code']}")
+    return {"code": 200, "message": "success", "data": item}
+
+
+@router.get("/edge/register/status/{device_id}")
+async def get_edge_registration_status(device_id: str):
+    return {"code": 200, "message": "success", "data": await get_edge_device_status(device_id)}
+
+
+@router.get("/edge/register/pending")
+async def get_pending_edge_registrations():
+    return {"code": 200, "message": "success", "data": list_pending_requests()}
+
+
+@router.post("/edge/register/verify")
+async def verify_edge_registration(payload: dict):
+    request_id = str(payload.get("request_id") or "").strip()
+    code = str(payload.get("code") or "").strip()
+    if not request_id or not code:
+        raise HTTPException(status_code=400, detail="request_id and code are required")
+
+    result = await verify_registration_request(request_id, code)
+    if result is None:
+        raise HTTPException(status_code=403, detail="验证码错误或已过期")
+    logger.info(f"Edge registration verified: device={result['device_id']}")
+    return {"code": 200, "message": "success", "data": result}
+
+
+@router.get("/edge/devices")
+async def list_edge_devices(
+    limit: int = 200,
+    db: AsyncSession = Depends(get_db),
+):
+    limit = max(1, min(limit, 1000))
+    devices_result = await db.execute(
+        select(EdgeDevice).order_by(EdgeDevice.last_verified_at.desc())
+    )
+    records_result = await db.execute(
+        select(EdgeStreamRecord).order_by(EdgeStreamRecord.started_at.desc()).limit(limit)
+    )
+    devices = devices_result.scalars().all()
+    records = records_result.scalars().all()
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {
+            "devices": [{
+                "id": device.id,
+                "device_id": device.device_id,
+                "device_name": device.device_name,
+                "source_mode": device.source_mode,
+                "user_agent": device.user_agent,
+                "last_ip": device.last_ip,
+                "allowed": device.allowed,
+                "first_registered_at": device.first_registered_at.isoformat() if device.first_registered_at else None,
+                "last_verified_at": device.last_verified_at.isoformat() if device.last_verified_at else None,
+                "last_stream_at": device.last_stream_at.isoformat() if device.last_stream_at else None,
+            } for device in devices],
+            "records": [{
+                "id": record.id,
+                "device_id": record.device_id,
+                "device_name": record.device_name,
+                "source_mode": record.source_mode,
+                "client_ip": record.client_ip,
+                "started_at": record.started_at.isoformat() if record.started_at else None,
+                "ended_at": record.ended_at.isoformat() if record.ended_at else None,
+                "status": record.status,
+                "frames_received": record.frames_received,
+            } for record in records],
+        },
+    }
+
+
+@router.delete("/edge/devices/{device_id}")
+async def revoke_edge_device(device_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(EdgeDevice).where(EdgeDevice.device_id == device_id))
+    device = result.scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found")
+    device.allowed = False
+    await db.commit()
+    logger.info(f"Edge device revoked: {device_id}")
     return {"code": 200, "message": "success", "data": {"device_id": device_id}}
 # --- 3. Configuration Management APIs ---
 

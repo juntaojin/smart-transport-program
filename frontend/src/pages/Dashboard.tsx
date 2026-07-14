@@ -44,6 +44,11 @@ interface Anomaly {
   label: string;
 }
 
+interface ModelConfig {
+  model_name: string;
+  enabled: boolean;
+}
+
 const ALERT_HOLD_MS = 1000;
 
 const getViolationKey = (violation: Violation) =>
@@ -66,6 +71,7 @@ export default function Dashboard() {
   const [selectedDeviceId, setSelectedDeviceId] = useState('default');
   const [activeRtspDevices, setActiveRtspDevices] = useState<string[]>([]);
   const [videoAspectRatio, setVideoAspectRatio] = useState('16 / 9');
+  const [isViolationDetectionEnabled, setIsViolationDetectionEnabled] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const latestFrameRef = useRef<string | null>(null);
@@ -88,14 +94,16 @@ export default function Dashboard() {
   const pointsForRender = useRef<{x: number, y: number}[]>([]);
   const vehiclesForRender = useRef<Vehicle[]>([]);
   const anomaliesForRender = useRef<Anomaly[]>([]);
+  const isViolationDetectionEnabledRef = useRef(isViolationDetectionEnabled);
   // Keep refs in sync with state for render closure
   selectedDeviceRef.current = selectedDeviceId;
   activeRtspDevicesRef.current = activeRtspDevices;
   aspectRef.current = videoAspectRatio;
-  zonesForRender.current = existingZones;
-  pointsForRender.current = currentZonePoints;
+  zonesForRender.current = isViolationDetectionEnabled ? existingZones : [];
+  pointsForRender.current = isViolationDetectionEnabled ? currentZonePoints : [];
   vehiclesForRender.current = vehicles;
   anomaliesForRender.current = anomalies;
+  isViolationDetectionEnabledRef.current = isViolationDetectionEnabled;
   
   // System Metrics
   const [metrics, setMetrics] = useState({
@@ -171,6 +179,35 @@ export default function Dashboard() {
       }
     };
     loadSandCameras();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadModelControls = async () => {
+      try {
+        const res = await configAPI.getModels();
+        if (cancelled || res.code !== 200 || !Array.isArray(res.data)) return;
+
+        const violationConfig = (res.data as ModelConfig[])
+          .find(config => config.model_name === 'violation_detection');
+        const enabled = Boolean(violationConfig?.enabled);
+        setIsViolationDetectionEnabled(enabled);
+        if (!enabled) {
+          setIsDrawing(false);
+          setCurrentZonePoints([]);
+        }
+      } catch (err) {
+        console.error('Failed to load model controls:', err);
+      }
+    };
+
+    loadModelControls();
+    const interval = window.setInterval(loadModelControls, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, []);
 
   const activeSandCameras = sandCameras.filter(camera => activeRtspDevices.includes(`rtsp_${camera.id}`));
@@ -591,6 +628,7 @@ export default function Dashboard() {
             ctx.fillText(label, left + 4, labelTop + 14);
           }
           const drawZones = () => {
+            if (!isViolationDetectionEnabledRef.current) return;
             const zones = zonesForRender.current;
             const points = pointsForRender.current;
             // Draw existing zones
@@ -665,7 +703,7 @@ export default function Dashboard() {
 
   // Zone drawing handlers
   const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isDrawing) return;
+    if (!isViolationDetectionEnabled || !isDrawing) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -902,7 +940,7 @@ export default function Dashboard() {
             </div>
 
             <div className="absolute inset-0 bg-gray-100 dark:bg-[#0F1013] overflow-hidden flex items-center justify-center">
-              <div className="relative w-full h-full flex justify-center items-center" onClick={handleCanvasClick} style={{ cursor: isDrawing ? 'crosshair' : 'default' }}>
+              <div className="relative w-full h-full flex justify-center items-center" onClick={handleCanvasClick} style={{ cursor: isViolationDetectionEnabled && isDrawing ? 'crosshair' : 'default' }}>
                 <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block object-contain" />
                 {!hasFrame && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center text-center bg-gray-100 dark:bg-[#0F1013]">
@@ -914,6 +952,7 @@ export default function Dashboard() {
             </div>
 
             {/* Drawing Controls */}
+            {isViolationDetectionEnabled && (
             <div className="absolute left-6 bottom-6 flex flex-wrap gap-2 z-10 bg-white/90 dark:bg-[#1C1C22]/90 backdrop-blur-md border border-[var(--color-border-card)] px-4 py-3 rounded-2xl">
               {!isDrawing ? (
                 <button onClick={() => { setIsDrawing(true); setCurrentZonePoints([]); }} className="flex items-center gap-1.5 text-xs font-semibold text-[var(--color-text-primary)] hover:text-emerald-400 transition-colors">
@@ -935,6 +974,7 @@ export default function Dashboard() {
                 </>
               )}
             </div>
+            )}
           </div>
 
           {/* Anomalies Tracking Board */}

@@ -68,3 +68,30 @@ class ModelConfig(Base):
     enabled = Column(Boolean, default=True)
     params = Column(JSON, nullable=True)  # Additional config parameters
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class EdgeDevice(Base):
+    __tablename__ = "edge_devices"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    device_id = Column(String(80), unique=True, index=True, nullable=False)
+    device_name = Column(String(120), nullable=True)
+    source_mode = Column(String(30), default="camera")
+    user_agent = Column(String(500), nullable=True)
+    last_ip = Column(String(80), nullable=True)
+    allowed = Column(Boolean, default=True)
+    first_registered_at = Column(DateTime, default=datetime.utcnow)
+    last_verified_at = Column(DateTime, default=datetime.utcnow)
+    last_stream_at = Column(DateTime, nullable=True)
+
+class EdgeStreamRecord(Base):
+    __tablename__ = "edge_stream_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    device_id = Column(String(80), index=True, nullable=False)
+    device_name = Column(String(120), nullable=True)
+    source_mode = Column(String(30), default="camera")
+    client_ip = Column(String(80), nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    ended_at = Column(DateTime, nullable=True)
+    status = Column(String(30), default="streaming")
+    frames_received = Column(Integer, default=0)
