@@ -34,6 +34,10 @@ export const whitelistAPI = {
 
 // Statistical Analytics
 export const statsAPI = {
+  plateRecords: (limit: number = 200) => request(`/plate-records?limit=${limit}`),
+  deletePlateRecord: (recordId: number) => request(`/plate-records/${recordId}`, {
+    method: 'DELETE',
+  }),
   vehicles: (zone?: string, minutes: number = 30) => {
     const q = zone ? `?zone=${encodeURIComponent(zone)}&minutes=${minutes}` : `?minutes=${minutes}`;
     return request(`/stats/vehicles${q}`);
@@ -49,11 +53,12 @@ export const statsAPI = {
 // System configs
 export const configAPI = {
   getModels: () => request('/configs/models'),
-  updateModel: (modelName: string, enabled: boolean) => request('/configs/models', {
+  updateModel: (modelName: string, enabled?: boolean, parameters?: Record<string, number>) => request('/configs/models', {
     method: 'PUT',
     body: JSON.stringify({
       model_name: modelName,
       enabled,
+      parameters,
     }),
   }),
   getZones: () => request('/configs/zones'),

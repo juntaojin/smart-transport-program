@@ -10,16 +10,17 @@ from cloud_server.config import (
     ANOMALY_MIN_EXTENT,
     ANOMALY_MIN_BOX_SIZE,
     ANOMALY_MODEL_PATH,
-    ANOMALY_THRESHOLD,
     ANOMALY_STABILIZATION_ENABLED,
     ANOMALY_MAX_JITTER_PX,
     ANOMALY_ALERT_SECONDS,
     ANOMALY_MAX_MISSING_SECONDS,
     ANOMALY_STATIC_EDGE_SUPPRESSION_PX,
     ANOMALY_VEHICLE_MASK_PADDING,
+    ANOMALY_DIRTY_ABSENCE_FRAMES,
 )
 from cloud_server.pipeline.engine import PipelineNode
 from cloud_server.pipeline.context import FrameContext
+from cloud_server.runtime_config import get_model_parameters
 from model_api import (
     detect_anomalies,
     load_anomaly_model,
@@ -35,6 +36,7 @@ class AnomalyDetectionNode(PipelineNode):
 
     def load_model(self):
         self._frame_count = 0
+        threshold = get_model_parameters(self.name)["confidence"]
         reset_anomaly_state()
         if not load_anomaly_model(
             ANOMALY_MODEL_PATH,
@@ -52,12 +54,13 @@ class AnomalyDetectionNode(PipelineNode):
             max_missing_seconds=ANOMALY_MAX_MISSING_SECONDS,
             static_edge_suppression_px=ANOMALY_STATIC_EDGE_SUPPRESSION_PX,
             vehicle_mask_padding=ANOMALY_VEHICLE_MASK_PADDING,
+            dirty_absence_frames=ANOMALY_DIRTY_ABSENCE_FRAMES,
         ):
             raise RuntimeError(
                 f"Failed to load anomaly model from {ANOMALY_MODEL_PATH}"
             )
         logger.info(
-            f"[AnomalyDetection] Node ready (threshold={ANOMALY_THRESHOLD}, "
+            f"[AnomalyDetection] Node ready (threshold={threshold}, "
             f"device={ANOMALY_DEVICE}, warmup={ANOMALY_BANK_FRAMES}, "
             f"alert_frames={ANOMALY_ALERT_FRAMES}, alert_seconds={ANOMALY_ALERT_SECONDS}, "
             f"min_area={ANOMALY_MIN_AREA}, diff_thresh={ANOMALY_DIFF_THRESH}, "
@@ -70,6 +73,7 @@ class AnomalyDetectionNode(PipelineNode):
 
     def _do_process(self, context: FrameContext) -> FrameContext:
         self._frame_count += 1
+        threshold = get_model_parameters(self.name)["confidence"]
 
         try:
             normal_boxes = context.properties.get("vehicle_boxes")
@@ -96,7 +100,7 @@ class AnomalyDetectionNode(PipelineNode):
 
         filtered = []
         for anomaly in anomalies:
-            normalized = self._normalize_anomaly(anomaly)
+            normalized = self._normalize_anomaly(anomaly, threshold)
             if normalized is not None:
                 filtered.append(normalized)
 
@@ -109,7 +113,7 @@ class AnomalyDetectionNode(PipelineNode):
         context.properties["road_anomalies"] = filtered
         return context
 
-    def _normalize_anomaly(self, anomaly):
+    def _normalize_anomaly(self, anomaly, threshold):
         if not isinstance(anomaly, dict):
             return None
 
@@ -127,7 +131,7 @@ class AnomalyDetectionNode(PipelineNode):
         height = max(0.0, normalized_box[3] - normalized_box[1])
         area = width * height
 
-        if confidence < ANOMALY_THRESHOLD:
+        if confidence < threshold:
             return None
         if area < ANOMALY_MIN_AREA:
             return None

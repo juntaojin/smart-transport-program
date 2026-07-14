@@ -19,6 +19,24 @@ class AnomalyLifecycleTests(unittest.TestCase):
 
     def setUp(self):
         self.module.unload_anomaly_model()
+        self.module._bank_frames = self.module.DEFAULT_BANK_FRAMES
+        self.module._alert_frames = self.module.DEFAULT_ALERT_FRAMES
+        self.module._max_age = self.module.DEFAULT_MAX_AGE
+        self.module._min_area = self.module.DEFAULT_MIN_AREA
+        self.module._diff_thresh = self.module.DEFAULT_DIFF_THRESH
+        self.module._min_extent = self.module.DEFAULT_MIN_EXTENT
+        self.module._min_box_size = self.module.DEFAULT_MIN_BOX_SIZE
+        self.module._stabilization_enabled = self.module.DEFAULT_STABILIZATION_ENABLED
+        self.module._max_jitter_px = self.module.DEFAULT_MAX_JITTER_PX
+        self.module._alert_seconds = self.module.DEFAULT_ALERT_SECONDS
+        self.module._max_missing_seconds = self.module.DEFAULT_MAX_MISSING_SECONDS
+        self.module._static_edge_suppression_px = (
+            self.module.DEFAULT_STATIC_EDGE_SUPPRESSION_PX
+        )
+        self.module._vehicle_mask_padding = self.module.DEFAULT_VEHICLE_MASK_PADDING
+        self.module._dirty_absence_frames = (
+            self.module.DEFAULT_DIRTY_ABSENCE_FRAMES
+        )
 
     def tearDown(self):
         self.module.unload_anomaly_model()
@@ -136,6 +154,43 @@ class AnomalyLifecycleTests(unittest.TestCase):
         self.assertEqual(alerts[0]["label"], "road_anomaly")
         self.assertGreaterEqual(alerts[0]["confidence"], 1.0)
 
+    def test_removed_anomaly_does_not_leave_a_road_ghost(self):
+        with patch.object(self.module._NormalDetector, "detect", return_value=[]):
+            self._configure_fast_detector()
+            for ts in [0.0, 0.1, 0.2]:
+                self.module.detect_anomalies(
+                    self._road_frame(),
+                    "removed-object",
+                    timestamp=ts,
+                    normal_boxes=[],
+                )
+
+            self.module.detect_anomalies(
+                self._road_frame(with_object=True),
+                "removed-object",
+                timestamp=0.3,
+                normal_boxes=[],
+            )
+            alerts = self.module.detect_anomalies(
+                self._road_frame(with_object=True),
+                "removed-object",
+                timestamp=0.55,
+                normal_boxes=[],
+            )
+            self.assertEqual(len(alerts), 1)
+
+            removed_outputs = [
+                self.module.detect_anomalies(
+                    self._road_frame(),
+                    "removed-object",
+                    timestamp=ts,
+                    normal_boxes=[],
+                )
+                for ts in [0.8, 0.9, 1.1]
+            ]
+
+        self.assertTrue(all(output == [] for output in removed_outputs))
+
     def test_vehicle_box_suppresses_object_alert(self):
         with patch.object(self.module.os.path, "isfile", return_value=True), \
                 patch.object(self.module._NormalDetector, "detect", return_value=[]):
@@ -150,6 +205,74 @@ class AnomalyLifecycleTests(unittest.TestCase):
                     normal_boxes=[[62, 44, 99, 81]],
                 )
                 self.assertEqual(alerts, [])
+
+    def test_warmup_vehicle_ghost_is_patched_after_vehicle_leaves(self):
+        with patch.object(self.module._NormalDetector, "detect", return_value=[]):
+            self._configure_fast_detector()
+            vehicle_box = [[62, 44, 99, 81]]
+            for ts in [0.0, 0.1, 0.2]:
+                self.assertEqual(
+                    self.module.detect_anomalies(
+                        self._road_frame(with_object=True),
+                        "warmup-vehicle",
+                        timestamp=ts,
+                        normal_boxes=vehicle_box,
+                    ),
+                    [],
+                )
+
+            detector = self.module._device_states[
+                "warmup-vehicle"
+            ].change_detector
+            detector.dirty_absence_frames = 3
+            self.assertTrue(np.any(detector.dirty_bg_mask))
+
+            outputs = [
+                self.module.detect_anomalies(
+                    self._road_frame(),
+                    "warmup-vehicle",
+                    timestamp=ts,
+                    normal_boxes=[],
+                )
+                for ts in [0.3, 0.4, 0.5]
+            ]
+
+        self.assertTrue(all(output == [] for output in outputs))
+        self.assertFalse(np.any(detector.dirty_bg_mask))
+        self.assertEqual(int(detector.median_bg[60, 80]), 90)
+
+    def test_dirty_region_does_not_hide_anomaly_elsewhere(self):
+        with patch.object(self.module._NormalDetector, "detect", return_value=[]):
+            self._configure_fast_detector()
+            vehicle_box = [[62, 44, 99, 81]]
+            for ts in [0.0, 0.1, 0.2]:
+                self.module.detect_anomalies(
+                    self._road_frame(with_object=True),
+                    "dirty-with-anomaly",
+                    timestamp=ts,
+                    normal_boxes=vehicle_box,
+                )
+
+            frame = self._road_frame()
+            cv2.rectangle(frame, (110, 42), (137, 69), (15, 15, 15), -1)
+            self.assertEqual(
+                self.module.detect_anomalies(
+                    frame,
+                    "dirty-with-anomaly",
+                    timestamp=0.3,
+                    normal_boxes=[],
+                ),
+                [],
+            )
+            alerts = self.module.detect_anomalies(
+                frame,
+                "dirty-with-anomaly",
+                timestamp=0.55,
+                normal_boxes=[],
+            )
+
+        self.assertEqual(len(alerts), 1)
+        self.assertGreater(alerts[0]["box"][0], 100)
 
     def test_lazy_model_load_and_inference_are_serialized(self):
         calls = []

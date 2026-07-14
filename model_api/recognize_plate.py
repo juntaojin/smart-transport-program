@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 import hyperlpr3 as lpr3
 from hyperlpr3.inference.pipeline import get_rotate_crop_image
+from .plate_format import is_valid_china_plate, normalize_plate_number
 
 ROI_UPSCALE_TARGET = 800
 LANDMARK_EXPAND_RATIO = 0.18
@@ -66,7 +67,8 @@ def _detect_and_recognize(roi):
         if len(code2) > len(code):
             code, conf = code2, conf2
 
-    if len(code) >= 6:
+    code = normalize_plate_number(code)
+    if is_valid_china_plate(code):
         return code, conf
     return "", 0.0
 

@@ -2,6 +2,7 @@ from loguru import logger
 from cloud_server.pipeline.engine import PipelineNode
 from cloud_server.pipeline.context import FrameContext
 import cloud_server.config as server_config
+from cloud_server.runtime_config import get_model_parameters
 from model_api import detect_violations
 
 
@@ -26,7 +27,7 @@ class ViolationDetectionNode(PipelineNode):
 
         vehicles_payload = []
         for idx, box in enumerate(boxes):
-            if idx >= len(track_ids):
+            if idx >= len(track_ids) or track_ids[idx] is None:
                 continue
             vehicles_payload.append({
                 "track_id": track_ids[idx],
@@ -35,7 +36,7 @@ class ViolationDetectionNode(PipelineNode):
             })
 
         zones_payload = []
-        parking_threshold = server_config.PARKING_THRESHOLD
+        parking_threshold = get_model_parameters(self.name)["parking_duration"]
         for zone in server_config.NO_PARKING_ZONES:
             zones_payload.append({
                 "name": zone["name"],

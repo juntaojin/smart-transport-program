@@ -4,6 +4,7 @@ sqlalchemy
 aiosqlite
 loguru>=0.7.2
 psutil>=5.9.6
+nvidia-ml-py>=12.535.108
 opencv-python
 pillow
 scipy

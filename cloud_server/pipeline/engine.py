@@ -49,7 +49,7 @@ class InferencePipeline:
         "anomaly_detection",
         "violation_detection",
     )
-    VEHICLE_DEPENDENTS = ("plate_ocr", "violation_detection")
+    VEHICLE_DEPENDENTS = ("plate_ocr", "anomaly_detection", "violation_detection")
     VEHICLE_INTERNAL_NODES = ("tracking", "transform")
 
     def __init__(self):

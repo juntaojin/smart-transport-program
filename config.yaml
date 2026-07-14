@@ -19,7 +19,7 @@ cloud_server:
     yolo_confidence: 0.5
     yolo_iou: 0.5
     yolo_imgsz: 640
-    anomaly_threshold: 0.25
+    anomaly_threshold: 0.4
     anomaly_model_path: models/yolo26s.pt
     anomaly_device: auto
     anomaly_bank_frames: 5
@@ -35,6 +35,7 @@ cloud_server:
     anomaly_max_missing_seconds: 0.5
     anomaly_static_edge_suppression_px: 3
     anomaly_vehicle_mask_padding: 8
+    anomaly_dirty_absence_frames: 30
   zones:
     no_parking: []
   thresholds:
@@ -104,4 +105,34 @@ ipm_service:
         - 168.73988291
       - - 4.017e-05
         - 0.00290816
+        - 1.0
+  live10:
+    num3:
+      camera_points:
+      - - 431.0
+        - 199.0
+      - - 741.0
+        - 208.0
+      - - 752.0
+        - 713.0
+      - - 359.0
+        - 709.0
+      world_points:
+      - - 471.0
+        - 90.0
+      - - 472.0
+        - 150.0
+      - - 356.0
+        - 151.0
+      - - 354.0
+        - 91.0
+      homography_matrix:
+      - - 3.439e-05
+        - -0.04778696
+        - 528.96866638
+      - - 0.20945425
+        - 0.08448954
+        - -7.82567419
+      - - -2.712e-05
+        - 0.00057592
         - 1.0

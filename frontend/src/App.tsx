@@ -21,11 +21,11 @@ export default function App() {
   }, [isDarkMode]);
 
   const tabs = [
-    { id: 'dashboard', label: '实时驾驶舱 (Transcope)', icon: LayoutDashboard },
+    { id: 'dashboard', label: '监控', icon: LayoutDashboard },
     { id: 'vehicles', label: '车辆与识别', icon: Car },
     { id: 'anomalies', label: '抛洒与异常', icon: ShieldAlert },
     { id: 'config', label: '大模型引擎', icon: Sliders },
-    { id: 'ipm', label: 'IPM 标定', icon: MapPin },
+    { id: 'ipm', label: '热力图', icon: MapPin },
   ];
 
   const renderContent = () => {
@@ -57,7 +57,7 @@ export default function App() {
             <span className="text-gray-900 dark:text-white font-extrabold text-lg select-none">T</span>
           </div>
           <div className="hidden lg:block">
-            <h1 className="font-bold text-lg leading-none tracking-tight text-[var(--color-text-primary)]">Transcope.</h1>
+            <h1 className="font-bold text-lg leading-none tracking-tight text-[var(--color-text-primary)]">云边端智慧交通系统</h1>
           </div>
         </div>
 

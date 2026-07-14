@@ -36,7 +36,8 @@ defaults = {
             "anomaly_alert_seconds": 0.8,
             "anomaly_max_missing_seconds": 0.5,
             "anomaly_static_edge_suppression_px": 3,
-            "anomaly_vehicle_mask_padding": 8
+            "anomaly_vehicle_mask_padding": 8,
+            "anomaly_dirty_absence_frames": 30
         },
         "zones": {
             "no_parking": [
@@ -128,6 +129,7 @@ ANOMALY_ALERT_SECONDS = c_server["models"].get("anomaly_alert_seconds", 0.8)
 ANOMALY_MAX_MISSING_SECONDS = c_server["models"].get("anomaly_max_missing_seconds", 0.5)
 ANOMALY_STATIC_EDGE_SUPPRESSION_PX = c_server["models"].get("anomaly_static_edge_suppression_px", 3)
 ANOMALY_VEHICLE_MASK_PADDING = c_server["models"].get("anomaly_vehicle_mask_padding", 8)
+ANOMALY_DIRTY_ABSENCE_FRAMES = c_server["models"].get("anomaly_dirty_absence_frames", 30)
 
 # No Parking Zones (map to tuples for points to keep pipeline logic unchanged)
 raw_zones = c_server["zones"]["no_parking"]

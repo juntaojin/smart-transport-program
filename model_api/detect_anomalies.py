@@ -19,6 +19,7 @@ DEFAULT_ALERT_SECONDS = 0.8
 DEFAULT_MAX_MISSING_SECONDS = 0.5
 DEFAULT_STATIC_EDGE_SUPPRESSION_PX = 3
 DEFAULT_VEHICLE_MASK_PADDING = 8
+DEFAULT_DIRTY_ABSENCE_FRAMES = 30
 IOU_THRESH = 0.3
 EDGE_MARGIN = 4
 NORMAL_CONF = 0.15
@@ -42,6 +43,7 @@ _alert_seconds = DEFAULT_ALERT_SECONDS
 _max_missing_seconds = DEFAULT_MAX_MISSING_SECONDS
 _static_edge_suppression_px = DEFAULT_STATIC_EDGE_SUPPRESSION_PX
 _vehicle_mask_padding = DEFAULT_VEHICLE_MASK_PADDING
+_dirty_absence_frames = DEFAULT_DIRTY_ABSENCE_FRAMES
 _model_lock = threading.RLock()
 _registry_lock = threading.RLock()
 _device_states = {}
@@ -76,12 +78,14 @@ def load_anomaly_model(
     max_missing_seconds=None,
     static_edge_suppression_px=None,
     vehicle_mask_padding=None,
+    dirty_absence_frames=None,
 ):
     """Load the shared normal-object model from an existing local path."""
     global _model, _model_device, _bank_frames, _alert_frames, _max_age
     global _min_area, _diff_thresh, _min_extent, _min_box_size
     global _stabilization_enabled, _max_jitter_px, _alert_seconds
     global _max_missing_seconds, _static_edge_suppression_px, _vehicle_mask_padding
+    global _dirty_absence_frames
     _bank_frames = max(1, int(bank_frames or DEFAULT_BANK_FRAMES))
     _alert_frames = max(1, int(alert_frames or DEFAULT_ALERT_FRAMES))
     _max_age = max(1, int(max_age or DEFAULT_MAX_AGE))
@@ -103,6 +107,10 @@ def load_anomaly_model(
     _vehicle_mask_padding = max(0, int(
         vehicle_mask_padding if vehicle_mask_padding is not None
         else DEFAULT_VEHICLE_MASK_PADDING
+    ))
+    _dirty_absence_frames = max(1, int(
+        dirty_absence_frames if dirty_absence_frames is not None
+        else DEFAULT_DIRTY_ABSENCE_FRAMES
     ))
     path = os.path.abspath(os.path.expanduser(model_path or _default_model_path()))
     if not os.path.isfile(path):
@@ -190,6 +198,7 @@ def _box_overlap_ratio(a, b):
 
 
 def _normalize_external_boxes(boxes):
+    """Normalize boxes produced by the upstream, sandbox-trained vehicle model."""
     normalized = []
     for box in boxes or []:
         if isinstance(box, dict):
@@ -201,7 +210,11 @@ def _normalize_external_boxes(boxes):
         except (TypeError, ValueError):
             continue
         if x2 > x1 and y2 > y1:
-            normalized.append({"bbox": [x1, y1, x2, y2], "label": "normal", "conf": 1.0})
+            normalized.append({
+                "bbox": [x1, y1, x2, y2],
+                "label": "vehicle",
+                "conf": 1.0,
+            })
     return normalized
 
 
@@ -278,6 +291,7 @@ class _ChangeDetector:
         self.bank_frames = _bank_frames
         self.min_extent = _min_extent
         self.min_box_size = _min_box_size
+        self.vehicle_mask_padding = _vehicle_mask_padding
         self.static_edge_suppression_px = _static_edge_suppression_px
         self.edge_k = None
         if self.static_edge_suppression_px > 0:
@@ -286,13 +300,17 @@ class _ChangeDetector:
         self.stabilizer = _FrameStabilizer()
         self._warmup_buffer = []
         self._warmed = False
+        self.dirty_bg_mask = None
+        self._dirty_absence_count = None
+        self.dirty_absence_frames = _dirty_absence_frames
 
-    def warmup_feed(self, frame):
+    def warmup_feed(self, frame, vehicle_dets=None):
         if self._warmed:
             return True
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         stabilized = self.stabilizer.stabilize(gray)
         self._warmup_buffer.append(stabilized.copy())
+        self._record_dirty_vehicles(gray.shape, vehicle_dets)
         if len(self._warmup_buffer) >= self.bank_frames:
             stack = np.stack(self._warmup_buffer, axis=0)
             self.median_bg = np.median(stack, axis=0).astype(np.uint8)
@@ -302,16 +320,33 @@ class _ChangeDetector:
             self._warmed = True
         return self._warmed
 
-    def detect(self, frame):
+    def detect(self, frame, vehicle_dets=None):
         height, width = frame.shape[:2]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         stabilized = self.stabilizer.stabilize(gray)
+        self._patch_departed_vehicles(stabilized, vehicle_dets)
+
         diff_median = cv2.absdiff(stabilized, self.median_bg)
         diff_running = cv2.absdiff(stabilized, self.running_bg.astype(np.uint8))
-        diff = cv2.max(diff_median, diff_running)
+        # Treat the median and running backgrounds as two valid background
+        # hypotheses. Matching either one prevents a stale background from
+        # turning a removed object (or a departed warmup vehicle) into a ghost.
+        diff = cv2.min(diff_median, diff_running)
         fg = (diff > self.diff_thresh).astype(np.uint8)
         fg = self._suppress_static_edges(fg, stabilized)
+
+        # A warmup vehicle produces a road-shaped ghost after it leaves. Suppress
+        # only those known-dirty pixels until they have been safely patched.
+        dirty_pixels = None
+        if self.dirty_bg_mask is not None:
+            dirty_pixels = self.dirty_bg_mask > 0
+            fg[dirty_pixels] = 0
+
         update_mask = fg == 0
+        if dirty_pixels is not None:
+            # Suppressing a dirty area does not make it suitable for background
+            # learning; keep the running background frozen until patching.
+            update_mask[dirty_pixels] = False
         self.running_bg[update_mask] = (
             (1.0 - self.alpha) * self.running_bg[update_mask]
             + self.alpha * stabilized[update_mask]
@@ -342,6 +377,79 @@ class _ChangeDetector:
                 "area": int(area),
             })
         return blobs
+
+    def _record_dirty_vehicles(self, frame_shape, vehicle_dets):
+        if not vehicle_dets:
+            return
+        if self.dirty_bg_mask is None:
+            self.dirty_bg_mask = np.zeros(frame_shape, dtype=np.uint8)
+        height, width = frame_shape
+        pad = self.vehicle_mask_padding
+        for det in vehicle_dets:
+            x1, y1, x2, y2 = det["bbox"]
+            left = max(0, min(width - 1, int(x1) - pad))
+            top = max(0, min(height - 1, int(y1) - pad))
+            right = max(0, min(width - 1, int(x2) + pad))
+            bottom = max(0, min(height - 1, int(y2) + pad))
+            if right > left and bottom > top:
+                cv2.rectangle(
+                    self.dirty_bg_mask,
+                    (left, top),
+                    (right, bottom),
+                    255,
+                    -1,
+                )
+
+    def _patch_departed_vehicles(self, stabilized, vehicle_dets):
+        if self.dirty_bg_mask is None or not np.any(self.dirty_bg_mask):
+            return
+
+        current_vehicle_mask = np.zeros_like(self.dirty_bg_mask)
+        height, width = current_vehicle_mask.shape
+        for det in vehicle_dets or []:
+            x1, y1, x2, y2 = det["bbox"]
+            left = max(0, min(width - 1, int(x1)))
+            top = max(0, min(height - 1, int(y1)))
+            right = max(0, min(width - 1, int(x2)))
+            bottom = max(0, min(height - 1, int(y2)))
+            if right > left and bottom > top:
+                cv2.rectangle(
+                    current_vehicle_mask,
+                    (left, top),
+                    (right, bottom),
+                    255,
+                    -1,
+                )
+
+        # Cover detector jitter and the padding used by the warmup dirty mask.
+        safe_current = cv2.dilate(
+            current_vehicle_mask,
+            np.ones((25, 25), dtype=np.uint8),
+        )
+        occupied = (self.dirty_bg_mask > 0) & (safe_current > 0)
+
+        if self._dirty_absence_count is None:
+            self._dirty_absence_count = np.zeros(
+                self.dirty_bg_mask.shape,
+                dtype=np.int32,
+            )
+
+        dirty = self.dirty_bg_mask > 0
+        self._dirty_absence_count[~dirty] = 0
+        self._dirty_absence_count[occupied] = 0
+        absent = dirty & ~occupied
+        self._dirty_absence_count[absent] += 1
+
+        patch_pixels = dirty & (
+            self._dirty_absence_count >= self.dirty_absence_frames
+        )
+        if not np.any(patch_pixels):
+            return
+
+        self.median_bg[patch_pixels] = stabilized[patch_pixels]
+        self.running_bg[patch_pixels] = stabilized[patch_pixels].astype(np.float32)
+        self.dirty_bg_mask[patch_pixels] = 0
+        self._dirty_absence_count[patch_pixels] = 0
 
     def _suppress_static_edges(self, fg, stabilized_gray):
         if self.edge_k is None:
@@ -501,20 +609,32 @@ def detect_anomalies(frame, device_id="default", timestamp=None, normal_boxes=No
     try:
         state = _get_device_state(device_id, frame.shape[:2])
         with state.lock:
+            external_vehicles = _normalize_external_boxes(normal_boxes)
+            # Only the sandbox-trained yolo11 output is trusted for vehicle
+            # occupancy. yolo26 remains a secondary exclusion model below.
+            vehicle_dets = external_vehicles
+
             if not state.change_detector.is_ready:
-                state.change_detector.warmup_feed(frame)
+                state.change_detector.warmup_feed(frame, vehicle_dets)
                 return []
-            fg_blobs = state.change_detector.detect(frame)
+            fg_blobs = state.change_detector.detect(frame, vehicle_dets)
             if not fg_blobs:
                 active_tracks, _ = state.anomaly_tracker.update([], [], timestamp=timestamp)
             else:
-                external_normal = _normalize_external_boxes(normal_boxes)
-                normal_dets = external_normal or state.normal_detector.detect(frame)
+                normal_dets = list(vehicle_dets)
+                # Keep yolo26 as a secondary normal-object exclusion model; it
+                # is intentionally not used for warmup vehicle occupancy.
+                normal_dets.extend(state.normal_detector.detect(frame))
                 active_tracks, _ = state.anomaly_tracker.update(
                     fg_blobs, normal_dets, timestamp=timestamp
                 )
 
-            active_alerts = [track for track in active_tracks if track.get("alerted")]
+            # Missing tracks remain in the tracker briefly for association, but
+            # should not keep drawing a box after the object has been removed.
+            active_alerts = [
+                track for track in active_tracks
+                if track.get("alerted") and track["time_since_update"] == 0
+            ]
             return [{
                 "box": [float(value) for value in alert["bbox"]],
                 "confidence": round(min(

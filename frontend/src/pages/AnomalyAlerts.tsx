@@ -94,7 +94,7 @@ export default function AnomalyAlerts() {
             <ShieldAlert className="text-amber-500 animate-pulse" />
             路面异常状况看板
           </h2>
-          <p className="text-[var(--color-text-secondary)] text-sm mt-0.5">Grounding DINO 自动识别障碍物、撒落物及危险异常记录</p>
+          <p className="text-[var(--color-text-secondary)] text-sm mt-0.5">障碍物、撒落物及危险异常记录</p>
         </div>
         
         <div className="flex items-center gap-3">

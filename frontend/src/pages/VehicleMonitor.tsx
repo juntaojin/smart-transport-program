@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { whitelistAPI } from '../services/api';
+import { statsAPI, whitelistAPI } from '../services/api';
 import { Plus, Trash2, Search, CheckCircle, ShieldAlert, Award } from 'lucide-react';
 
 interface PlateRecord {
@@ -9,12 +9,28 @@ interface PlateRecord {
   timestamp: string;
 }
 
+const formatRecordDate = (timestamp: string) => {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return timestamp;
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+};
+
 export default function VehicleMonitor() {
   const [whitelist, setWhitelist] = useState<string[]>([]);
   const [newPlate, setNewPlate] = useState('');
   const [records, setRecords] = useState<PlateRecord[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(false);
+  const [deletingRecordIds, setDeletingRecordIds] = useState<Set<number>>(new Set());
 
   // Load Whitelist and Records
   const loadData = async () => {
@@ -25,16 +41,10 @@ export default function VehicleMonitor() {
         setWhitelist(wlRes.data);
       }
       
-      // Simulate/Fetch historical plate recognition records
-      // We'll read the database when the backend is up. For now, we provide mock fallbacks 
-      // if empty so the UI looks beautiful immediately!
-      const mockRecords: PlateRecord[] = [
-        { id: 1, plate_number: '粤B88888', is_whitelisted: true, timestamp: new Date(Date.now() - 3 * 60000).toISOString() },
-        { id: 2, plate_number: '京A66666', is_whitelisted: true, timestamp: new Date(Date.now() - 10 * 60000).toISOString() },
-        { id: 3, plate_number: '沪C12345', is_whitelisted: false, timestamp: new Date(Date.now() - 18 * 60000).toISOString() },
-        { id: 4, plate_number: '浙A99999', is_whitelisted: false, timestamp: new Date(Date.now() - 25 * 60000).toISOString() }
-      ];
-      setRecords(mockRecords);
+      const recordsRes = await statsAPI.plateRecords();
+      if (recordsRes.code === 200 && Array.isArray(recordsRes.data)) {
+        setRecords(recordsRes.data);
+      }
     } catch (err) {
       console.error('Failed to load vehicle monitor data:', err);
     } finally {
@@ -61,7 +71,7 @@ export default function VehicleMonitor() {
         setRecords(prev => prev.map(r => r.plate_number === newPlate.toUpperCase().trim() ? { ...r, is_whitelisted: true } : r));
       }
     } catch (err) {
-      alert('添加失败，请重试');
+      alert(err instanceof Error ? err.message : '添加失败，请重试');
     }
   };
 
@@ -75,6 +85,27 @@ export default function VehicleMonitor() {
       }
     } catch (err) {
       alert('移除失败');
+    }
+  };
+
+  // Delete a single plate recognition record
+  const handleDeleteRecord = async (recordId: number) => {
+    if (!window.confirm(`确定删除记录 #${recordId} 吗？`)) return;
+
+    setDeletingRecordIds(prev => new Set(prev).add(recordId));
+    try {
+      const res = await statsAPI.deletePlateRecord(recordId);
+      if (res.code === 200) {
+        setRecords(prev => prev.filter(r => r.id !== recordId));
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '删除记录失败，请重试');
+    } finally {
+      setDeletingRecordIds(prev => {
+        const next = new Set(prev);
+        next.delete(recordId);
+        return next;
+      });
     }
   };
 
@@ -118,16 +149,17 @@ export default function VehicleMonitor() {
                 <th className="py-3 px-4 font-semibold">车牌号码</th>
                 <th className="py-3 px-4 font-semibold">白名单状态</th>
                 <th className="py-3 px-4 font-semibold">时间戳</th>
+                <th className="py-3 px-4 font-semibold text-right">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#222328]/50 text-sm">
               {filteredRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="py-8 text-center text-[var(--color-text-muted)]">未找到相关车牌识别记录</td>
+                  <td colSpan={5} className="py-8 text-center text-[var(--color-text-muted)]">未找到相关车牌识别记录</td>
                 </tr>
               ) : (
-                filteredRecords.map((r, i) => (
-                  <tr key={i} className="hover:hover:bg-gray-100 dark:hover:bg-[#1C1E24]/40 transition-colors group">
+                filteredRecords.map((r) => (
+                  <tr key={r.id} className="hover:hover:bg-gray-100 dark:hover:bg-[#1C1E24]/40 transition-colors group">
                     <td className="py-3.5 px-4 font-semibold text-[var(--color-text-muted)]">#{r.id}</td>
                     <td className="py-3.5 px-4">
                       <span className="font-mono font-bold bg-gray-100 dark:bg-[#101114] border border-[var(--color-border-card)] rounded-lg px-2.5 py-1 text-emerald-400 group-hover:border-emerald-500/30 transition-colors">
@@ -146,7 +178,18 @@ export default function VehicleMonitor() {
                       )}
                     </td>
                     <td className="py-3.5 px-4 text-[var(--color-text-secondary)] font-mono text-xs">
-                      {new Date(r.timestamp).toLocaleTimeString()}
+                      {formatRecordDate(r.timestamp)}
+                    </td>
+                    <td className="py-3.5 px-4 text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteRecord(r.id)}
+                        disabled={deletingRecordIds.has(r.id)}
+                        className="inline-flex items-center justify-center text-rose-500/80 hover:text-rose-400 hover:bg-rose-500/10 disabled:opacity-50 disabled:cursor-not-allowed p-1.5 rounded-lg transition-colors"
+                        title="删除记录"
+                      >
+                        <Trash2 size={16} />
+                      </button>
                     </td>
                   </tr>
                 ))
@@ -163,7 +206,7 @@ export default function VehicleMonitor() {
             <Award size={22} className="text-emerald-400" />
             车牌白名单配置
           </h2>
-          <p className="text-[var(--color-text-secondary)] text-sm mt-0.5">白名单内车辆在禁停区临时停车免于罚款</p>
+          <p className="text-[var(--color-text-secondary)] text-sm mt-0.5">白名单内车辆在可开闸</p>
         </div>
 
         {/* 添加新车牌 */}

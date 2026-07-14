@@ -13,7 +13,17 @@ from cloud_server.database.orm_models import (
     PlateRecord, VehicleStat, ParkingViolation, RoadAnomaly, SystemMetric, ModelConfig
 )
 from cloud_server.config import BASE_DIR, DATA_DIR
-from model_api import reset_anomaly_state
+from cloud_server.runtime_config import (
+    get_model_parameters,
+    get_parameter_schema,
+    update_model_parameters,
+)
+from model_api import (
+    get_vehicle_model_status,
+    is_valid_china_plate,
+    normalize_plate_number,
+    reset_anomaly_state,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -50,9 +60,9 @@ async def get_whitelist():
 @router.post("/whitelist")
 async def add_to_whitelist(payload: dict):
     """Add a new plate number to the whitelist"""
-    plate = payload.get("plate_number")
-    if not plate:
-        raise HTTPException(status_code=400, detail="plate_number is required")
+    plate = normalize_plate_number(payload.get("plate_number"))
+    if not is_valid_china_plate(plate):
+        raise HTTPException(status_code=400, detail="请输入有效的中国车牌号")
     
     whitelist = load_whitelist()
     if plate not in whitelist:
@@ -70,6 +80,42 @@ async def remove_from_whitelist(plate: str):
         save_whitelist(whitelist)
         return {"code": 200, "message": "success", "data": whitelist}
     raise HTTPException(status_code=404, detail=f"Plate '{plate}' not in whitelist")
+
+
+@router.get("/plate-records")
+async def get_plate_records(
+    limit: int = 200,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return real OCR records, newest first."""
+    limit = max(1, min(limit, 1000))
+    result = await db.execute(
+        select(PlateRecord).order_by(PlateRecord.timestamp.desc()).limit(limit)
+    )
+    records = result.scalars().all()
+    data = [{
+        "id": record.id,
+        "plate_number": record.plate_number,
+        "is_whitelisted": record.is_whitelisted,
+        "timestamp": record.timestamp.isoformat(),
+    } for record in records]
+    return {"code": 200, "message": "success", "data": data}
+
+
+@router.delete("/plate-records/{record_id}")
+async def delete_plate_record(
+    record_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a single OCR plate record."""
+    result = await db.execute(select(PlateRecord).where(PlateRecord.id == record_id))
+    record = result.scalar_one_or_none()
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Plate record '{record_id}' not found")
+
+    await db.delete(record)
+    await db.commit()
+    return {"code": 200, "message": "success", "data": {"id": record_id}}
 
 
 # --- 2. Statistical Analysis APIs ---
@@ -228,6 +274,9 @@ async def get_model_configs(request: Request):
             "model_name": name,
             "enabled": node.enabled,
             "requires_vehicle_pipeline": name in pipeline.VEHICLE_DEPENDENTS,
+            "parameters": get_model_parameters(name),
+            "parameter_schema": get_parameter_schema(name),
+            "runtime_status": get_vehicle_model_status() if name == "vehicle_detection" else None,
         })
     return {"code": 200, "message": "success", "data": data}
 
@@ -236,6 +285,7 @@ async def update_model_configs(payload: dict, request: Request):
     """Modify AI model configurations and toggle nodes in real-time"""
     model_name = payload.get("model_name")
     enabled = payload.get("enabled")
+    parameters = payload.get("parameters")
     
     if not model_name:
         raise HTTPException(status_code=400, detail="model_name is required")
@@ -244,17 +294,38 @@ async def update_model_configs(payload: dict, request: Request):
     
     if model_name not in pipeline.USER_CAPABILITIES:
         raise HTTPException(status_code=400, detail=f"'{model_name}' is not a user-facing capability")
-    if not isinstance(enabled, bool):
+    if enabled is None and parameters is None:
+        raise HTTPException(status_code=400, detail="enabled or parameters is required")
+    if enabled is not None and not isinstance(enabled, bool):
         raise HTTPException(status_code=400, detail="enabled must be a boolean")
 
-    pipeline.set_capability_state(model_name, enabled)
-    logger.info(f"Updated capability {model_name}: enabled={enabled}")
+    if enabled is not None:
+        pipeline.set_capability_state(model_name, enabled)
+        logger.info(f"Updated capability {model_name}: enabled={enabled}")
+    if parameters is not None:
+        try:
+            applied = update_model_parameters(model_name, parameters)
+        except (ValueError, yaml.YAMLError) as exc:
+            logger.warning(f"Rejected model parameters for {model_name}: {exc}")
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            logger.error(f"Failed to persist model parameters for {model_name}: {exc}")
+            raise HTTPException(status_code=500, detail="failed to persist model parameters") from exc
+        logger.info(f"Hot-updated {model_name} parameters: {applied}")
 
     states = {
         name: pipeline.nodes[name].enabled
         for name in pipeline.USER_CAPABILITIES
     }
-    return {"code": 200, "message": "success", "data": states}
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {
+            "states": states,
+            "parameters": get_model_parameters(model_name),
+            "apply_mode": "hot",
+        },
+    }
 
 @router.get("/configs/zones")
 async def get_zones_config(request: Request):

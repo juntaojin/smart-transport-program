@@ -8,7 +8,7 @@ class PlateRecord(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     plate_number = Column(String(20), index=True, nullable=False)
     is_whitelisted = Column(Boolean, default=False)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=datetime.now)
 
 class VehicleStat(Base):
     __tablename__ = "vehicle_stats"

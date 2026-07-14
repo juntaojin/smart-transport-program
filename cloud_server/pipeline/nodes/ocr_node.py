@@ -61,6 +61,11 @@ class PlateRecognitionNode(PipelineNode):
             cls_name = classes[idx] if idx < len(classes) else "vehicle"
             tid = track_ids[idx] if idx < len(track_ids) else None
 
+            if tid is None:
+                plates.append("")
+                confidences.append(0.0)
+                continue
+
             if cls_name not in ["car", "truck", "bus"]:
                 plates.append("")
                 confidences.append(0.0)

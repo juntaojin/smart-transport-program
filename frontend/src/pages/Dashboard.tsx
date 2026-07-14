@@ -11,6 +11,21 @@ interface Vehicle {
   world_coord?: number[];
 }
 
+interface RecentPlate {
+  vehicle: Vehicle;
+  seenAt: number;
+}
+
+interface RecentViolation {
+  violation: Violation;
+  seenAt: number;
+}
+
+interface RecentAnomaly {
+  anomaly: Anomaly;
+  seenAt: number;
+}
+
 interface SandCamera {
   id: string;
   name: string;
@@ -29,6 +44,14 @@ interface Anomaly {
   label: string;
 }
 
+const ALERT_HOLD_MS = 1000;
+
+const getViolationKey = (violation: Violation) =>
+  `${violation.vehicle_id || ''}:${violation.zone_name || ''}`;
+
+const getAnomalyKey = (anomaly: Anomaly) =>
+  `${anomaly.label || 'road_anomaly'}:${(anomaly.box || []).map(point => Math.round(point)).join(',')}`;
+
 
 
 export default function Dashboard() {
@@ -36,6 +59,7 @@ export default function Dashboard() {
   const [hasFrame, setHasFrame] = useState(false);
   const [fps, setFps] = useState<number>(0);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [recentPlates, setRecentPlates] = useState<Vehicle[]>([]);
   const [violations, setViolations] = useState<Violation[]>([]);
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [sandCameras, setSandCameras] = useState<SandCamera[]>([]);
@@ -46,8 +70,12 @@ export default function Dashboard() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const latestFrameRef = useRef<string | null>(null);
   const selectedDeviceRef = useRef(selectedDeviceId);
+  const activeRtspDevicesRef = useRef(activeRtspDevices);
   const frameUrlsRef = useRef<Record<string, string>>({});
   const payloadsRef = useRef<Record<string, any>>({});
+  const plateCacheRef = useRef<Record<string, Map<string, RecentPlate>>>({});
+  const violationCacheRef = useRef<Record<string, Map<string, RecentViolation>>>({});
+  const anomalyCacheRef = useRef<Record<string, Map<string, RecentAnomaly>>>({});
   const aspectRef = useRef(videoAspectRatio);
   
   // Zone drawing state (use refs for canvas render closure)
@@ -62,6 +90,7 @@ export default function Dashboard() {
   const anomaliesForRender = useRef<Anomaly[]>([]);
   // Keep refs in sync with state for render closure
   selectedDeviceRef.current = selectedDeviceId;
+  activeRtspDevicesRef.current = activeRtspDevices;
   aspectRef.current = videoAspectRatio;
   zonesForRender.current = existingZones;
   pointsForRender.current = currentZonePoints;
@@ -149,10 +178,57 @@ export default function Dashboard() {
   const normalizeDeviceId = (deviceId?: string) => deviceId?.startsWith('rtsp_') ? deviceId : 'default';
 
   const applyPayload = (data: any) => {
+    const deviceId = normalizeDeviceId(data.device_id);
+    const now = Date.now();
+
     if (data.fps !== undefined) setFps(data.fps);
-    if (data.vehicles) setVehicles(data.vehicles);
-    if (data.violations) setViolations(data.violations);
-    if (data.anomalies) setAnomalies(data.anomalies);
+    if (Array.isArray(data.vehicles)) {
+      const cache = plateCacheRef.current[deviceId] || new Map<string, RecentPlate>();
+      plateCacheRef.current[deviceId] = cache;
+
+      const currentVehicles = data.vehicles.map((vehicle: Vehicle) => {
+        if (vehicle.id == null) return vehicle;
+        const key = String(vehicle.id);
+        if (vehicle.plate) {
+          cache.set(key, { vehicle, seenAt: now });
+          return vehicle;
+        }
+        const cached = cache.get(key);
+        return cached && now - cached.seenAt < 1000
+          ? { ...vehicle, plate: cached.vehicle.plate }
+          : vehicle;
+      });
+
+      for (const [key, entry] of cache) {
+        if (now - entry.seenAt >= 1000) cache.delete(key);
+      }
+      setVehicles(currentVehicles);
+      setRecentPlates(Array.from(cache.values()).map(entry => entry.vehicle));
+    }
+    if (Array.isArray(data.violations)) {
+      const cache = violationCacheRef.current[deviceId] || new Map<string, RecentViolation>();
+      violationCacheRef.current[deviceId] = cache;
+
+      for (const violation of data.violations) {
+        cache.set(getViolationKey(violation), { violation, seenAt: now });
+      }
+      for (const [key, entry] of cache) {
+        if (now - entry.seenAt >= ALERT_HOLD_MS) cache.delete(key);
+      }
+      setViolations(Array.from(cache.values()).map(entry => entry.violation));
+    }
+    if (Array.isArray(data.anomalies)) {
+      const cache = anomalyCacheRef.current[deviceId] || new Map<string, RecentAnomaly>();
+      anomalyCacheRef.current[deviceId] = cache;
+
+      for (const anomaly of data.anomalies) {
+        cache.set(getAnomalyKey(anomaly), { anomaly, seenAt: now });
+      }
+      for (const [key, entry] of cache) {
+        if (now - entry.seenAt >= ALERT_HOLD_MS) cache.delete(key);
+      }
+      setAnomalies(Array.from(cache.values()).map(entry => entry.anomaly));
+    }
 
     if (data.system_metrics) {
       setMetrics({
@@ -170,8 +246,109 @@ export default function Dashboard() {
     }
   };
 
+  const clearStreamResults = () => {
+    latestFrameRef.current = null;
+    setHasFrame(false);
+    setFps(0);
+    setVehicles([]);
+    setRecentPlates([]);
+    setViolations([]);
+    setAnomalies([]);
+    delete plateCacheRef.current[selectedDeviceRef.current];
+    delete violationCacheRef.current[selectedDeviceRef.current];
+    delete anomalyCacheRef.current[selectedDeviceRef.current];
+  };
+
+  const removeCachedStream = (deviceId: string) => {
+    const frameUrl = frameUrlsRef.current[deviceId];
+    if (frameUrl?.startsWith('blob:')) URL.revokeObjectURL(frameUrl);
+    delete frameUrlsRef.current[deviceId];
+    delete payloadsRef.current[deviceId];
+    delete plateCacheRef.current[deviceId];
+    delete violationCacheRef.current[deviceId];
+    delete anomalyCacheRef.current[deviceId];
+  };
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const deviceId = selectedDeviceRef.current;
+      const now = Date.now();
+      const plateCache = plateCacheRef.current[deviceId];
+      let platesChanged = false;
+      if (plateCache) {
+        for (const [key, entry] of plateCache) {
+          if (now - entry.seenAt >= ALERT_HOLD_MS) {
+            plateCache.delete(key);
+            platesChanged = true;
+          }
+        }
+      }
+      if (platesChanged && plateCache) {
+        setRecentPlates(Array.from(plateCache.values()).map(entry => entry.vehicle));
+      }
+
+      const violationCache = violationCacheRef.current[deviceId];
+      let violationsChanged = false;
+      if (violationCache) {
+        for (const [key, entry] of violationCache) {
+          if (now - entry.seenAt >= ALERT_HOLD_MS) {
+            violationCache.delete(key);
+            violationsChanged = true;
+          }
+        }
+      }
+      if (violationsChanged && violationCache) {
+        setViolations(Array.from(violationCache.values()).map(entry => entry.violation));
+      }
+
+      const anomalyCache = anomalyCacheRef.current[deviceId];
+      let anomaliesChanged = false;
+      if (anomalyCache) {
+        for (const [key, entry] of anomalyCache) {
+          if (now - entry.seenAt >= ALERT_HOLD_MS) {
+            anomalyCache.delete(key);
+            anomaliesChanged = true;
+          }
+        }
+      }
+      if (anomaliesChanged && anomalyCache) {
+        setAnomalies(Array.from(anomalyCache.values()).map(entry => entry.anomaly));
+      }
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const handleStreamStopped = (deviceId: string) => {
+    removeCachedStream(deviceId);
+
+    let fallback: string | undefined;
+    if (deviceId.startsWith('rtsp_')) {
+      const remainingRtspDevices = activeRtspDevicesRef.current.filter(id => id !== deviceId);
+      activeRtspDevicesRef.current = remainingRtspDevices;
+      setActiveRtspDevices(remainingRtspDevices);
+      fallback = remainingRtspDevices[0];
+    }
+
+    if (selectedDeviceRef.current !== deviceId) return;
+    if (fallback) {
+      selectedDeviceRef.current = fallback;
+      setSelectedDeviceId(fallback);
+      latestFrameRef.current = frameUrlsRef.current[fallback] || null;
+      setHasFrame(Boolean(latestFrameRef.current));
+      const payload = payloadsRef.current[fallback];
+      if (payload) applyPayload(payload);
+      return;
+    }
+
+    selectedDeviceRef.current = 'default';
+    setSelectedDeviceId('default');
+    removeCachedStream('default');
+    clearStreamResults();
+  };
+
   const selectDevice = (deviceId: string) => {
     if (deviceId.startsWith("rtsp_")) anomalyAPI.reset(deviceId).catch(() => {});
+    selectedDeviceRef.current = deviceId;
     setSelectedDeviceId(deviceId);
     const frameUrl = frameUrlsRef.current[deviceId];
     latestFrameRef.current = frameUrl || null;
@@ -203,16 +380,28 @@ export default function Dashboard() {
           if (deviceId.startsWith('rtsp_') && !activeSet.has(deviceId)) delete payloadsRef.current[deviceId];
         }
 
+        activeRtspDevicesRef.current = activeIds;
         setActiveRtspDevices(activeIds);
 
-        if (selectedDeviceRef.current.startsWith('rtsp_') && !activeSet.has(selectedDeviceRef.current)) {
+        const selectedDevice = selectedDeviceRef.current;
+        const shouldSelectFirstSandCamera = selectedDevice === 'default'
+          && activeIds.length > 0;
+        const selectedRtspStopped = selectedDevice.startsWith('rtsp_')
+          && !activeSet.has(selectedDevice);
+
+        if (shouldSelectFirstSandCamera || selectedRtspStopped) {
           const fallback = activeIds[0] || 'default';
           selectedDeviceRef.current = fallback;
           setSelectedDeviceId(fallback);
-          latestFrameRef.current = frameUrlsRef.current[fallback] || null;
-          setHasFrame(Boolean(latestFrameRef.current));
-          const payload = payloadsRef.current[fallback];
-          if (payload) applyPayload(payload);
+          if (fallback === 'default') {
+            removeCachedStream('default');
+            clearStreamResults();
+          } else {
+            latestFrameRef.current = frameUrlsRef.current[fallback] || null;
+            setHasFrame(Boolean(latestFrameRef.current));
+            const payload = payloadsRef.current[fallback];
+            if (payload) applyPayload(payload);
+          }
         }
       } catch {}
     };
@@ -234,8 +423,11 @@ export default function Dashboard() {
       if (previous) URL.revokeObjectURL(previous);
       frameUrlsRef.current[deviceId] = url;
       if (deviceId.startsWith('rtsp_')) {
-        setActiveRtspDevices(prev => prev.includes(deviceId) ? prev : [...prev, deviceId]);
-        if (selectedDeviceRef.current === 'default' && !frameUrlsRef.current.default) {
+        if (!activeRtspDevicesRef.current.includes(deviceId)) {
+          activeRtspDevicesRef.current = [...activeRtspDevicesRef.current, deviceId];
+          setActiveRtspDevices(activeRtspDevicesRef.current);
+        }
+        if (selectedDeviceRef.current === 'default') {
           selectedDeviceRef.current = deviceId;
           setSelectedDeviceId(deviceId);
           latestFrameRef.current = url;
@@ -250,17 +442,28 @@ export default function Dashboard() {
 
     const onMessage = (data: any) => {
       const deviceId = normalizeDeviceId(data.device_id);
+      if (data.type === 'stream_status' && data.status === 'stopped') {
+        handleStreamStopped(deviceId);
+        return;
+      }
       if (data.image) {
-        latestFrameRef.current = data.image;
         frameUrlsRef.current[deviceId] = data.image;
-        if (selectedDeviceRef.current === deviceId) setHasFrame(true);
+        if (selectedDeviceRef.current === deviceId) {
+          latestFrameRef.current = data.image;
+          setHasFrame(true);
+        }
       }
       payloadsRef.current[deviceId] = data;
       if (deviceId.startsWith('rtsp_')) {
-        setActiveRtspDevices(prev => prev.includes(deviceId) ? prev : [...prev, deviceId]);
-        if (selectedDeviceRef.current === 'default' && !frameUrlsRef.current.default) {
+        if (!activeRtspDevicesRef.current.includes(deviceId)) {
+          activeRtspDevicesRef.current = [...activeRtspDevicesRef.current, deviceId];
+          setActiveRtspDevices(activeRtspDevicesRef.current);
+        }
+        if (selectedDeviceRef.current === 'default') {
           selectedDeviceRef.current = deviceId;
           setSelectedDeviceId(deviceId);
+          latestFrameRef.current = frameUrlsRef.current[deviceId] || null;
+          setHasFrame(Boolean(latestFrameRef.current));
           applyPayload(data);
         }
       }
@@ -458,7 +661,7 @@ export default function Dashboard() {
 
 
   // Helper values
-  const platedVehicles = vehicles.filter(v => v.plate);
+  const platedVehicles = recentPlates;
 
   // Zone drawing handlers
   const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -530,7 +733,7 @@ export default function Dashboard() {
         <section className="lg:col-span-4 flex flex-col gap-6 w-full">
           
           {/* System Load */}
-          <div className="dashboard-card p-6 flex flex-col justify-between min-h-[300px]">
+          <div className="dashboard-card p-6 flex flex-col justify-between min-h-[380px]">
             <div className="flex justify-between items-start">
               <div>
                 <h3 className="text-sm font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">服务器核心负载</h3>
@@ -552,6 +755,14 @@ export default function Dashboard() {
                   <span className="text-[10px] text-teal-500 block uppercase font-bold tracking-wider">内存占用</span>
                   <span className="text-xs font-semibold">{metrics.memory_usage.toFixed(1)}%</span>
                 </div>
+              </div>
+              <div className="bg-violet-50 dark:bg-[#191724] border border-violet-200 dark:border-violet-500/20 px-3 py-2 rounded-xl">
+                <span className="text-[10px] text-violet-500 block uppercase font-bold tracking-wider">GPU 使用</span>
+                <span className="text-xs font-semibold">{metrics.gpu_usage === null ? '不可用' : `${metrics.gpu_usage.toFixed(1)}%`}</span>
+              </div>
+              <div className="bg-sky-50 dark:bg-[#151C24] border border-sky-200 dark:border-sky-500/20 px-3 py-2 rounded-xl">
+                <span className="text-[10px] text-sky-500 block uppercase font-bold tracking-wider">GPU 显存</span>
+                <span className="text-xs font-semibold">{metrics.gpu_details ? `${metrics.gpu_details.memory_percent.toFixed(1)}%` : '不可用'}</span>
               </div>
             </div>
 
@@ -583,6 +794,25 @@ export default function Dashboard() {
               <p className="text-[10px] text-[var(--color-text-secondary)] text-center mt-3 font-medium">
                 {metrics.cpu_details ? `物理 ${metrics.cpu_details.cores_physical} / 逻辑 ${metrics.cpu_details.cores_logical} | ${metrics.cpu_details.frequency_current_mhz} MHz` : 'Waiting for CPU stats'}
               </p>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-[var(--color-border-card)] bg-violet-500/5 px-3 py-3 text-[10px]">
+              {metrics.gpu_details ? (
+                <>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <span className="truncate font-semibold text-[var(--color-text-primary)]">{metrics.gpu_details.name}</span>
+                    <span className="shrink-0 text-orange-400">{metrics.gpu_details.temperature}°C</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-gray-200 dark:bg-[#26272B]">
+                    <div className="h-full rounded-full bg-violet-500 transition-all" style={{ width: `${Math.min(100, metrics.gpu_details.memory_percent)}%` }} />
+                  </div>
+                  <p className="mt-2 text-[var(--color-text-secondary)]">
+                    显存 {metrics.gpu_details.memory_used.toFixed(2)} / {metrics.gpu_details.memory_total.toFixed(2)} GB
+                  </p>
+                </>
+              ) : (
+                <p className="text-[var(--color-text-muted)]">未检测到 NVIDIA GPU 监控数据，请检查驱动和 NVML。</p>
+              )}
             </div>
           </div>
 
@@ -650,10 +880,12 @@ export default function Dashboard() {
               </div>
 
               <div className="flex items-center gap-2 flex-wrap bg-white/90 dark:bg-[#1C1C22]/90 backdrop-blur-md border border-[var(--color-border-card)] rounded-full p-1">
-                <button
-                  onClick={() => selectDevice('default')}
-                  className={`text-xs px-3.5 py-1.5 rounded-full font-medium transition-all ${selectedDeviceId === 'default' ? 'bg-gray-800 dark:bg-white text-white dark:text-black font-bold' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}
-                >边端默认</button>
+                {activeRtspDevices.length === 0 && (
+                  <button
+                    onClick={() => selectDevice('default')}
+                    className={`text-xs px-3.5 py-1.5 rounded-full font-medium transition-all ${selectedDeviceId === 'default' ? 'bg-gray-800 dark:bg-white text-white dark:text-black font-bold' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}
+                  >边端默认</button>
+                )}
                 {activeSandCameras.map(camera => {
                   const deviceId = `rtsp_${camera.id}`;
                   return (

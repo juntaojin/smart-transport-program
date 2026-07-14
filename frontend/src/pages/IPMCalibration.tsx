@@ -1119,7 +1119,7 @@ export default function IPMCalibration() {
     <div className="space-y-6">
       <div className="dashboard-card p-6">
         <h2 className="text-xl font-bold text-[var(--color-text-primary)] flex items-center gap-2">
-          <MapPin className="text-emerald-400" /> IPM 逆透视变换标定
+          <MapPin className="text-emerald-400" /> 热力图
         </h2>
         <p className="text-[var(--color-text-secondary)] text-sm mt-1">在摄像头画面和俯视图上各标记4个对应点（顺时针），计算单应性矩阵用于热力图坐标映射</p>
       </div>
@@ -1175,7 +1175,7 @@ export default function IPMCalibration() {
 
         {/* Lane selection buttons */}
         <div>
-          <label className="text-xs text-[var(--color-text-secondary)] block mb-2">已标定车道（点击选择）</label>
+          <label className="text-xs text-[var(--color-text-secondary)] block mb-2">已标定车道（点击选择 · {cameraLanes.length}）</label>
           <div className="flex flex-wrap items-center gap-2">
             {cameraLanes.length === 0 ? (
               <span className="text-xs text-[var(--color-text-muted)]">暂无，请先标定或手动输入车道ID</span>
@@ -1326,28 +1326,27 @@ export default function IPMCalibration() {
           <div className="dashboard-card p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-2">
-                <RefreshCw size={16} className="text-blue-400" /> 已标定车道
+                <RefreshCw size={16} className="text-blue-400" />
+                已标定车道（{cameraId} · {cameraLanes.length}）
               </h3>
               <button onClick={loadConfigs} className="text-xs text-blue-400 hover:text-blue-300 transition-colors">刷新</button>
             </div>
-            {Object.keys(calibratedLanes).length === 0 ? (
-              <p className="text-[var(--color-text-muted)] text-sm py-4 text-center">暂无标定数据</p>
+            {cameraLanes.length === 0 ? (
+              <p className="text-[var(--color-text-muted)] text-sm py-4 text-center">当前摄像头暂无标定车道</p>
             ) : (
               <div className="space-y-3 max-h-[180px] overflow-y-auto pr-2">
-                {Object.entries(calibratedLanes).map(([cid, lanes]) =>
-                  lanes.map((lid: string) => (
-                    <div key={`${cid}/${lid}`} className="flex items-center justify-between bg-white/90 dark:bg-[#1C1C22]/90 border border-[var(--color-border-card)] rounded-xl px-4 py-2 hover:border-[var(--color-border-card)] transition-colors">
-                      <div className="flex items-center gap-3">
-                        <span className="text-sm font-mono text-blue-400">{cid}</span>
-                        <span className="text-xs text-[var(--color-text-muted)]">/</span>
-                        <span className="text-sm font-semibold text-gray-900 dark:text-gray-200">{lid}</span>
-                      </div>
-                      <button onClick={() => handleDelete(cid, lid)} className="text-rose-500/80 hover:text-rose-400 hover:bg-rose-500/10 p-1.5 rounded-lg transition-colors">
-                        <Trash2 size={16} />
-                      </button>
+                {cameraLanes.map((lid: string) => (
+                  <div key={`${cameraId}/${lid}`} className="flex items-center justify-between bg-white/90 dark:bg-[#1C1C22]/90 border border-[var(--color-border-card)] rounded-xl px-4 py-2 hover:border-[var(--color-border-card)] transition-colors">
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-mono text-blue-400">{cameraId}</span>
+                      <span className="text-xs text-[var(--color-text-muted)]">/</span>
+                      <span className="text-sm font-semibold text-gray-900 dark:text-gray-200">{lid}</span>
                     </div>
-                  ))
-                )}
+                    <button onClick={() => handleDelete(cameraId, lid)} className="text-rose-500/80 hover:text-rose-400 hover:bg-rose-500/10 p-1.5 rounded-lg transition-colors">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
           </div>

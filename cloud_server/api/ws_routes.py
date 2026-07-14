@@ -3,19 +3,20 @@ import cv2
 import numpy as np
 import json
 import asyncio
+import os
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_server.pipeline.context import FrameContext
-from model_api import reset_anomaly_state
+from model_api import is_valid_china_plate, normalize_plate_number, reset_anomaly_state
 from cloud_server.database.connection import async_session
 from cloud_server.database.orm_models import (
     PlateRecord, VehicleStat, ParkingViolation, RoadAnomaly, SystemMetric
 )
 from cloud_server.config import (
-    CONGESTION_HIGH, CONGESTION_MEDIUM,
+    CONGESTION_HIGH, CONGESTION_MEDIUM, DATA_DIR,
 )
 
 router = APIRouter(prefix="/ws")
@@ -107,7 +108,7 @@ def annotate_frame(frame, properties):
         
         # Label text
         label_parts = []
-        if i < len(track_ids):
+        if i < len(track_ids) and track_ids[i] is not None:
             label_parts.append(f"ID:{track_ids[i]}")
         label_parts.append(cls)
         
@@ -131,6 +132,35 @@ def annotate_frame(frame, properties):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
 
     return frame
+
+
+async def save_recognized_plates(plates):
+    """Persist valid OCR results from either edge or RTSP streams."""
+    current_time = time.time()
+    valid_plates = []
+    for raw_plate in plates:
+        plate = normalize_plate_number(raw_plate)
+        if not is_valid_china_plate(plate):
+            continue
+        if plate not in registered_plates or current_time - registered_plates[plate] > 15.0:
+            registered_plates[plate] = current_time
+            valid_plates.append(plate)
+
+    if not valid_plates:
+        return
+
+    whitelist_path = os.path.join(DATA_DIR, "whitelist.json")
+    try:
+        with open(whitelist_path, "r", encoding="utf-8") as whitelist_file:
+            whitelist = set(json.load(whitelist_file))
+    except (OSError, json.JSONDecodeError):
+        whitelist = set()
+    async with async_session() as db:
+        for plate in valid_plates:
+            is_white = plate in whitelist
+            db.add(PlateRecord(plate_number=plate, is_whitelisted=is_white))
+            logger.info(f"DB Log: Recognized plate {plate} (whitelisted={is_white})")
+        await db.commit()
 
 
 async def save_aggregated_stats(properties, device_id):
@@ -157,21 +187,7 @@ async def save_aggregated_stats(properties, device_id):
             stat = VehicleStat(zone_name="Main Road", vehicle_count=count, congestion_level=level)
             db.add(stat)
             
-        # B. Store Plates (Only log newly recognized plates, limit duplicates within 15s)
-        plates = properties.get("plate_numbers", [])
-        for plate in plates:
-            if plate:
-                # Deduplicate plates in memory
-                if plate not in registered_plates or (current_time - registered_plates[plate] > 15.0):
-                    registered_plates[plate] = current_time
-                    
-                    # Read whitelist file to see if plate is whitelisted
-                    whitelist_file = json.loads(open("./data/whitelist.json", "r").read() if open("./data/whitelist.json", "r") else "[]")
-                    is_white = plate in whitelist_file
-                    
-                    record = PlateRecord(plate_number=plate, is_whitelisted=is_white)
-                    db.add(record)
-                    logger.info(f"DB Log: Recognized plate {plate} (whitelisted={is_white})")
+        # B. Plate records are persisted by the shared edge/RTSP helper below.
 
         # C. Store Violations (Log violation trigger and duration update)
         violations = properties.get("violations", [])
@@ -239,6 +255,8 @@ async def save_aggregated_stats(properties, device_id):
             db.add(metric)
             
         await db.commit()
+
+    await save_recognized_plates(properties.get("plate_numbers", []))
 
 
 def _process_pipeline_only(pipeline, frame, mode, device_id, fc):
@@ -342,6 +360,7 @@ async def receive_stream(websocket: WebSocket, device_id: str):
                 for track_id, plate in zip(track_ids, plates):
                     if plate:
                         device_plates[track_id] = plate
+                asyncio.create_task(save_recognized_plates(plates))
 
             now = time.monotonic()
             if now - inference_state["last_persist_time"] >= 1.0:
@@ -402,6 +421,11 @@ async def receive_stream(websocket: WebSocket, device_id: str):
             await worker_task
         except asyncio.CancelledError:
             pass
+        await dashboard_manager.broadcast({
+            "type": "stream_status",
+            "status": "stopped",
+            "device_id": device_id,
+        })
 
 # --- Dashboard WebSocket (Cloud -> Frontend Cockpit) ---
 @router.websocket("/dashboard")

@@ -156,6 +156,13 @@
             display: none;
         }
         #btn-pick-video:active { background: #334155; }
+        .range-value {
+            min-width: 48px;
+            text-align: right;
+            font-size: 13px;
+            color: #38bdf8;
+            font-weight: 700;
+        }
         .info-row {
             display: flex;
             justify-content: space-between;
@@ -246,6 +253,12 @@
                     <option value="0.3">低 (0.3)</option>
                 </select>
             </div>
+            <div class="hint">仅支持逆时针横放，固定输出 1280×720（高:宽 = 9:16）</div>
+            <div class="config-row">
+                <label for="camera-zoom">变焦倍率</label>
+                <input id="camera-zoom" type="range" min="1" max="4" step="0.1" value="1">
+                <span id="zoom-value" class="range-value">1.0x</span>
+            </div>
         </div>
 
         <div id="video-file-controls" style="display:none;">
@@ -312,6 +325,8 @@
         const deviceIdInput = document.getElementById('device-id');
         const cameraSelect = document.getElementById('camera-select');
         const qualitySelect = document.getElementById('quality');
+        const cameraZoom = document.getElementById('camera-zoom');
+        const zoomValue = document.getElementById('zoom-value');
         const qualityVideoSelect = document.getElementById('quality-video');
         const infoRes = document.getElementById('info-res');
         const infoSent = document.getElementById('info-sent');
@@ -334,6 +349,8 @@
         let hasPermission = false;
         let sourceMode = 'camera';
         let videoFileLoaded = false;
+        let zoomLevel = 1;
+        let nativeZoomSupported = false;
 
         function updateRtspSelectionState() {
             const checks = rtspCameraChecks();
@@ -401,6 +418,125 @@
             if (sourceMode === 'camera') return parseFloat(qualitySelect.value);
             return parseFloat(qualityVideoSelect.value);
         }
+
+        function getCameraVideoConstraints(devId) {
+            return {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                aspectRatio: { ideal: 16 / 9 },
+                ...(devId ? { deviceId: { exact: devId } } : { facingMode: { ideal: 'environment' } })
+            };
+        }
+
+        function updateCameraControlLabels() {
+            zoomValue.textContent = `${zoomLevel.toFixed(1)}x`;
+        }
+
+        function getCameraTrack() {
+            return stream ? stream.getVideoTracks()[0] : null;
+        }
+
+        function syncZoomControlWithTrack() {
+            const track = getCameraTrack();
+            const capabilities = track && track.getCapabilities ? track.getCapabilities() : {};
+            nativeZoomSupported = Boolean(capabilities && capabilities.zoom);
+            if (nativeZoomSupported) {
+                const min = capabilities.zoom.min || 1;
+                const max = capabilities.zoom.max || 4;
+                const step = capabilities.zoom.step || 0.1;
+                cameraZoom.min = String(min);
+                cameraZoom.max = String(max);
+                cameraZoom.step = String(step);
+                zoomLevel = Math.min(Math.max(zoomLevel, min), max);
+                cameraZoom.value = String(zoomLevel);
+            } else {
+                cameraZoom.min = '1';
+                cameraZoom.max = '4';
+                cameraZoom.step = '0.1';
+            }
+            updateCameraControlLabels();
+        }
+
+        async function applyCameraZoom() {
+            zoomLevel = parseFloat(cameraZoom.value) || 1;
+            updateCameraControlLabels();
+            const track = getCameraTrack();
+            if (!track || !nativeZoomSupported) return;
+            try {
+                await track.applyConstraints({ advanced: [{ zoom: zoomLevel }] });
+            } catch (e) {
+                nativeZoomSupported = false;
+                console.warn('Native camera zoom unavailable, using canvas zoom.', e);
+            }
+        }
+
+        const LANDSCAPE_OUTPUT = { width: 1280, height: 720 };
+
+        function getCameraRenderPlan(vw, vh) {
+            if (sourceMode !== 'camera') {
+                return { width: vw, height: vh, rotation: 0 };
+            }
+
+            const sourceIsLandscape = vw > vh;
+            if (sourceIsLandscape) {
+                return { ...LANDSCAPE_OUTPUT, rotation: 0 };
+            }
+
+            // Some mobile browsers already rotate MediaStream frames when the
+            // phone turns, while others keep portrait sensor dimensions. If a
+            // portrait frame is returned, rotate it counter-clockwise so the fixed
+            // landscape output keeps the phone's top edge pointing to the left.
+            return {
+                ...LANDSCAPE_OUTPUT,
+                rotation: -1
+            };
+        }
+
+        function getOutputSize(vw, vh) {
+            const { width, height } = getCameraRenderPlan(vw, vh);
+            return { width, height };
+        }
+
+        function drawFrameToCanvas(vw, vh) {
+            const output = getCameraRenderPlan(vw, vh);
+            if (canvas.width !== output.width || canvas.height !== output.height) {
+                canvas.width = output.width;
+                canvas.height = output.height;
+            }
+
+            const digitalZoom = sourceMode === 'camera' && !nativeZoomSupported ? Math.max(1, zoomLevel) : 1;
+            const shouldRotate = output.rotation !== 0;
+            const sourceAspect = vw / vh;
+            const outputAspect = shouldRotate ? output.height / output.width : output.width / output.height;
+            let sw = vw;
+            let sh = vh;
+            if (sourceAspect > outputAspect) {
+                sw = vh * outputAspect;
+            } else {
+                sh = vw / outputAspect;
+            }
+            sw = Math.max(1, sw / digitalZoom);
+            sh = Math.max(1, sh / digitalZoom);
+            const sx = Math.max(0, (vw - sw) / 2);
+            const sy = Math.max(0, (vh - sh) / 2);
+
+            ctx.save();
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (output.rotation === -1) {
+                ctx.translate(0, canvas.height);
+                ctx.rotate(-Math.PI / 2);
+                ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.height, canvas.width);
+            } else {
+                ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+            }
+            ctx.restore();
+            if (sourceMode === 'camera') {
+                infoRes.textContent = `${canvas.width}x${canvas.height}`;
+            }
+        }
+
+        cameraZoom.addEventListener('input', applyCameraZoom);
+        updateCameraControlLabels();
 
         // ── 摄像头 ──
         async function requestCameraPermission() {
@@ -522,7 +658,8 @@
 
         function updateVideoResolution() {
             if (video.videoWidth && video.videoHeight) {
-                infoRes.textContent = `${video.videoWidth}x${video.videoHeight}`;
+                const output = getOutputSize(video.videoWidth, video.videoHeight);
+                infoRes.textContent = `${output.width}x${output.height}`;
             }
         }
         video.addEventListener('loadedmetadata', updateVideoResolution);
@@ -533,14 +670,17 @@
                 if (stream) stopVideoSource();
                 const devId = cameraSelect.value;
                 const constraints = {
-                    video: devId ? { deviceId: { exact: devId } } : { facingMode: { ideal: 'environment' } },
+                    video: getCameraVideoConstraints(devId),
                     audio: false
                 };
                 stream = await navigator.mediaDevices.getUserMedia(constraints);
                 video.srcObject = stream;
                 await video.play();
+                syncZoomControlWithTrack();
+                await applyCameraZoom();
                 const trackSettings = stream.getVideoTracks()[0].getSettings();
-                infoRes.textContent = `${trackSettings.width}x${trackSettings.height}`;
+                const output = getOutputSize(trackSettings.width || video.videoWidth, trackSettings.height || video.videoHeight);
+                infoRes.textContent = `${output.width}x${output.height}`;
             } else {
                 if (!videoFileLoaded) throw new Error('未选择视频文件');
                 video.currentTime = 0;
@@ -677,12 +817,8 @@
             if (video.readyState >= video.HAVE_CURRENT_DATA) {
                 const vw = video.videoWidth;
                 const vh = video.videoHeight;
-                if (vw && vh && (canvas.width !== vw || canvas.height !== vh)) {
-                    canvas.width = vw;
-                    canvas.height = vh;
-                }
                 if (vw && vh) {
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    drawFrameToCanvas(vw, vh);
                     const quality = getQuality();
                     canvas.toBlob(blob => {
                         if (blob && ws && ws.readyState === WebSocket.OPEN) {

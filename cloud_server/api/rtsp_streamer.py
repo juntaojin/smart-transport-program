@@ -10,7 +10,12 @@ import numpy as np
 from loguru import logger
 
 from cloud_server.pipeline.context import FrameContext
-from cloud_server.api.ws_routes import dashboard_manager, calculate_fps, active_devices
+from cloud_server.api.ws_routes import (
+    active_devices,
+    calculate_fps,
+    dashboard_manager,
+    save_recognized_plates,
+)
 from cloud_server.config import (
     CONGESTION_HIGH,
     CONGESTION_MEDIUM,
@@ -132,6 +137,8 @@ class RTSPStreamManager:
         for track_id, plate in zip(track_ids, plates):
             if plate:
                 device_plates[track_id] = plate
+        if plates and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(save_recognized_plates(plates), self._loop)
 
     def _build_payload(self, device_id, context):
         if context is None:
@@ -186,6 +193,7 @@ class RTSPStreamManager:
             logger.error(f"Failed to start ffmpeg for: {rtsp_url}")
             with self._lock:
                 self.active_streams.pop(device_id, None)
+            self._broadcast({"type": "stream_status", "status": "stopped", "device_id": device_id})
             return
 
         logger.info(f"RTSP FFmpeg capture opened: {device_id}")
@@ -361,6 +369,7 @@ class RTSPStreamManager:
             active_devices.pop(device_id, None)
             with self._lock:
                 self.active_streams.pop(device_id, None)
+            self._broadcast({"type": "stream_status", "status": "stopped", "device_id": device_id})
             logger.info(f"RTSP stream worker exited: {device_id}")
 
     _last_metrics_time = 0

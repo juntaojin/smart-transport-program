@@ -1,6 +1,8 @@
 import os
-import traceback
+import gc
+import threading
 import numpy as np
+from loguru import logger
 from ultralytics import YOLO
 
 try:
@@ -20,6 +22,10 @@ DEFAULT_MODEL_NAME = "yolov11s_cisdrone_t.pt"
 FALLBACK_MODEL_NAMES = ("yolov11s_visdrone_t.pt", "yolo26s.pt")
 
 _model = None
+_loaded_model_path = None
+_model_error = None
+_model_lock = threading.RLock()
+_inference_lock = threading.RLock()
 
 
 def _candidate_model_paths():
@@ -38,29 +44,111 @@ def _candidate_model_paths():
 
 
 def _get_model():
-    global _model
-    if _model is None:
-        model_path = next((path for path in _candidate_model_paths() if os.path.exists(path)), DEFAULT_MODEL_NAME)
-        if YOLO_MODEL_PATH and not os.path.exists(YOLO_MODEL_PATH) and model_path != DEFAULT_MODEL_NAME:
-            print(f"[detect_vehicles] Configured model not found: {YOLO_MODEL_PATH}; using fallback: {model_path}")
-        print(f"[detect_vehicles] Loading YOLO model: {model_path}, conf={CONF_THRESHOLD}, iou={IOU_THRESHOLD}, imgsz={IMGSZ}, classes={VEHICLE_CLASSES}")
-        _model = YOLO(model_path)
-    return _model
+    with _model_lock:
+        model = _model
+    if model is None:
+        if not load_vehicle_model():
+            raise RuntimeError(_model_error or "vehicle model failed to load")
+        with _model_lock:
+            model = _model
+    return model
 
 
-def detect_vehicles(frame):
-    try:
-        model = _get_model()
-        results = model.track(
-            frame,
-            conf=CONF_THRESHOLD,
-            iou=IOU_THRESHOLD,
-            imgsz=IMGSZ,
-            classes=VEHICLE_CLASSES,
-            tracker="bytetrack.yaml",
-            persist=True,
-            verbose=False,
+def load_vehicle_model():
+    """Load and warm up the shared detector before the node reports ready."""
+    global _model, _loaded_model_path, _model_error
+    with _inference_lock, _model_lock:
+        if _model is not None:
+            return True
+
+        model_path = next(
+            (path for path in _candidate_model_paths() if os.path.isfile(path)),
+            None,
         )
+        if model_path is None:
+            _model_error = f"vehicle model file not found; configured path={YOLO_MODEL_PATH!r}"
+            logger.error(f"[VehicleDetection] {_model_error}")
+            return False
+
+        model_path = os.path.abspath(model_path)
+        if YOLO_MODEL_PATH and not os.path.isfile(YOLO_MODEL_PATH):
+            logger.warning(
+                f"[VehicleDetection] Configured model not found: {YOLO_MODEL_PATH}; "
+                f"using fallback: {model_path}"
+            )
+
+        try:
+            logger.info(
+                f"[VehicleDetection] Loading YOLO model: {model_path}, "
+                f"conf={CONF_THRESHOLD}, iou={IOU_THRESHOLD}, imgsz={IMGSZ}, "
+                f"classes={VEHICLE_CLASSES}"
+            )
+            model = YOLO(model_path)
+            model.predict(
+                np.zeros((IMGSZ, IMGSZ, 3), dtype=np.uint8),
+                conf=CONF_THRESHOLD,
+                iou=IOU_THRESHOLD,
+                imgsz=IMGSZ,
+                classes=VEHICLE_CLASSES,
+                verbose=False,
+            )
+            _model = model
+            _loaded_model_path = model_path
+            _model_error = None
+            logger.info(f"[VehicleDetection] YOLO model loaded and warmed up: {model_path}")
+            return True
+        except Exception as exc:
+            _model = None
+            _loaded_model_path = None
+            _model_error = str(exc)
+            logger.exception(f"[VehicleDetection] Failed to load or warm up model: {exc}")
+            return False
+
+
+def unload_vehicle_model():
+    """Release the detector after any active inference call has finished."""
+    global _model, _loaded_model_path, _model_error
+    with _inference_lock, _model_lock:
+        model = _model
+        _model = None
+        _loaded_model_path = None
+        _model_error = None
+        if model is not None:
+            del model
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception as exc:
+                logger.debug(f"[VehicleDetection] CUDA cache cleanup skipped: {exc}")
+        logger.info("[VehicleDetection] YOLO model unloaded")
+
+
+def get_vehicle_model_status():
+    with _model_lock:
+        return {
+            "state": "ready" if _model is not None else ("error" if _model_error else "unloaded"),
+            "loaded": _model is not None,
+            "path": _loaded_model_path,
+            "error": _model_error,
+        }
+
+
+def detect_vehicles(frame, confidence=None, iou=None):
+    try:
+        confidence = CONF_THRESHOLD if confidence is None else float(confidence)
+        iou = IOU_THRESHOLD if iou is None else float(iou)
+        with _inference_lock:
+            model = _get_model()
+            results = model.predict(
+                frame,
+                conf=confidence,
+                iou=iou,
+                imgsz=IMGSZ,
+                classes=VEHICLE_CLASSES,
+                verbose=False,
+            )
 
         vehicles = []
         if results and results[0].boxes is not None:
@@ -69,18 +157,13 @@ def detect_vehicles(frame):
                 cls_id = int(boxes.cls[i].item())
                 conf = float(boxes.conf[i].item())
                 xyxy = boxes.xyxy[i].cpu().numpy()
-                tid = None
-                if boxes.id is not None and i < len(boxes.id):
-                    tid = int(boxes.id[i].item())
                 vehicles.append({
                     "box": xyxy.tolist(),
                     "class": CLASS_NAMES.get(cls_id, "car"),
                     "confidence": conf,
-                    "track_id": tid,
                 })
 
         return vehicles
     except Exception as e:
-        print(f"[detect_vehicles] Error: {e}")
-        traceback.print_exc()
+        logger.exception(f"[VehicleDetection] Inference failed: {e}")
         return []
