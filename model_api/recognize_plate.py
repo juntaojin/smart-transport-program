@@ -15,6 +15,13 @@ from .plate_format import is_valid_china_plate, normalize_plate_number
 ROI_UPSCALE_TARGET = 800
 LANDMARK_EXPAND_RATIO = 0.18
 DETECTOR_THRESHOLD = 0.2
+SANDBOX_PLATE_CANDIDATES = {
+    "京B6789T",
+    "京E4682Y",
+    "京E7654Z",
+    "京K9134J",
+    "京H7912N",
+}
 
 _catcher = None
 _pipeline = None
@@ -73,6 +80,10 @@ def _detect_and_recognize(roi):
     return "", 0.0
 
 
+def _is_sandbox_plate(code):
+    return normalize_plate_number(code) in SANDBOX_PLATE_CANDIDATES
+
+
 def recognize_plate(vehicle_roi):
     try:
         if vehicle_roi.size == 0 or vehicle_roi.shape[0] < 15 or vehicle_roi.shape[1] < 40:
@@ -81,16 +92,17 @@ def recognize_plate(vehicle_roi):
         # 先对完整 ROI 检测
         upscaled = _upscale_roi(vehicle_roi)
         code, conf = _detect_and_recognize(upscaled)
-        if code:
+        if _is_sandbox_plate(code):
             return code, conf
 
-        # 回退：裁剪下半部重试（车牌通常在车辆下半部）
+        # 回退：裁剪下半部重试（车牌通常在车辆下半部）。沙盘只接受固定候选车牌，
+        # 如果完整 ROI 识别到其他合法车牌，也继续重试，避免错误结果进入前端缓存。
         h = vehicle_roi.shape[0]
         lower_half = vehicle_roi[int(h * 0.35):, :]
         if lower_half.size > 0 and lower_half.shape[0] >= 15 and lower_half.shape[1] >= 40:
             upscaled = _upscale_roi(lower_half)
             code, conf = _detect_and_recognize(upscaled)
-            if code:
+            if _is_sandbox_plate(code):
                 return code, conf
 
         return "", 0.0

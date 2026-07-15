@@ -8,6 +8,7 @@ interface Vehicle {
   class: string;
   box: number[];
   plate: string;
+  is_whitelisted?: boolean;
   world_coord?: number[];
 }
 
@@ -866,12 +867,20 @@ export default function Dashboard() {
               {platedVehicles.length === 0 ? (
                 <span className="text-[var(--color-text-muted)] text-xs">暂无识别结果</span>
               ) : (
-                platedVehicles.map((v, i) => (
-                  <div key={i} className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-2 text-center">
+                platedVehicles.map((v, i) => {
+                  const isWhitelisted = Boolean(v.is_whitelisted);
+                  const plateCardClass = isWhitelisted
+                    ? 'bg-emerald-500/10 border-emerald-500/30'
+                    : 'bg-rose-500/10 border-rose-500/30';
+                  const plateTextClass = isWhitelisted ? 'text-emerald-400' : 'text-rose-400';
+
+                  return (
+                  <div key={i} className={`${plateCardClass} border rounded-xl p-2 text-center`}>
                     <span className="text-[10px] text-[var(--color-text-secondary)] block uppercase mb-1">{v.class}</span>
-                    <span className="text-sm font-bold text-emerald-400 tracking-wider">{v.plate}</span>
+                    <span className={`text-sm font-bold ${plateTextClass} tracking-wider`}>{v.plate}</span>
                   </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>

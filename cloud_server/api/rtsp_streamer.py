@@ -14,8 +14,10 @@ from cloud_server.api.ws_routes import (
     active_devices,
     calculate_fps,
     dashboard_manager,
+    load_plate_whitelist,
     save_recognized_plates,
 )
+from model_api import normalize_plate_number
 from cloud_server.config import (
     CONGESTION_HIGH,
     CONGESTION_MEDIUM,
@@ -158,15 +160,18 @@ class RTSPStreamManager:
         track_ids = properties.get("track_ids", [])
         boxes = properties.get("vehicle_boxes", [])
         classes = properties.get("vehicle_classes", [])
+        whitelist = load_plate_whitelist()
         vehicles = []
         for index, box in enumerate(boxes):
             track_id = track_ids[index] if index < len(track_ids) else None
             class_name = classes[index] if index < len(classes) else "vehicle"
+            plate = device_plates.get(track_id, "") if track_id is not None else ""
             vehicles.append({
                 "id": track_id,
                 "class": class_name,
                 "box": [float(value) for value in box],
-                "plate": device_plates.get(track_id, "") if track_id is not None else "",
+                "plate": plate,
+                "is_whitelisted": bool(plate and normalize_plate_number(plate) in whitelist),
             })
 
         vehicle_count = len(boxes)

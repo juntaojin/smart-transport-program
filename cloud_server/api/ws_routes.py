@@ -83,6 +83,19 @@ last_system_metric_time = 0.0
 registered_plates = {}  # {plate_number: last_logged_timestamp}
 active_violations_db = {}  # {vehicle_id: db_id}
 
+
+def load_plate_whitelist():
+    whitelist_path = os.path.join(DATA_DIR, "whitelist.json")
+    try:
+        with open(whitelist_path, "r", encoding="utf-8") as whitelist_file:
+            return {
+                normalize_plate_number(plate)
+                for plate in json.load(whitelist_file)
+                if normalize_plate_number(plate)
+            }
+    except (OSError, json.JSONDecodeError):
+        return set()
+
 # Colors mapping in BGR
 COLOR_MAP = {
     "car": (0, 255, 0),        # Green
@@ -154,12 +167,7 @@ async def save_recognized_plates(plates):
     if not valid_plates:
         return
 
-    whitelist_path = os.path.join(DATA_DIR, "whitelist.json")
-    try:
-        with open(whitelist_path, "r", encoding="utf-8") as whitelist_file:
-            whitelist = set(json.load(whitelist_file))
-    except (OSError, json.JSONDecodeError):
-        whitelist = set()
+    whitelist = load_plate_whitelist()
     async with async_session() as db:
         for plate in valid_plates:
             is_white = plate in whitelist
@@ -320,14 +328,17 @@ async def receive_stream(websocket: WebSocket, device_id: str):
         boxes = properties.get("vehicle_boxes", [])
         classes = properties.get("vehicle_classes", [])
         world_coords = properties.get("world_coords", {})
+        whitelist = load_plate_whitelist()
         vehicles = []
         for index, box in enumerate(boxes):
             track_id = track_ids[index] if index < len(track_ids) else None
+            plate = dev_plates.get(track_id, "") if track_id is not None else ""
             vehicles.append({
                 "id": track_id,
                 "class": classes[index] if index < len(classes) else "vehicle",
                 "box": [float(value) for value in box],
-                "plate": dev_plates.get(track_id, "") if track_id is not None else "",
+                "plate": plate,
+                "is_whitelisted": bool(plate and normalize_plate_number(plate) in whitelist),
                 "world_coord": world_coords.get(track_id),
             })
 
