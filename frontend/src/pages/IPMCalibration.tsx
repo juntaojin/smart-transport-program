@@ -7,6 +7,11 @@ import roadModelV8 from '../assets/roadModelV8';
 
 interface Point { x: number; y: number }
 interface SandCamera { id: string; name: string; url: string }
+interface LaneCalibrationConfig {
+  camera_points: number[][];
+  world_points: number[][];
+  homography_matrix: number[][];
+}
 interface HeatmapConfig {
   radius: number;
   blur: number;
@@ -209,6 +214,7 @@ export default function IPMCalibration() {
   const [sandCameras, setSandCameras] = useState<SandCamera[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('default');
   const [activeRtspDevices, setActiveRtspDevices] = useState<string[]>([]);
+  const [multiCameraLanes, setMultiCameraLanes] = useState<Record<string, string>>({});
   const [videoAspectRatio, setVideoAspectRatio] = useState('16 / 9');
   const [isWorldFullscreen, setIsWorldFullscreen] = useState(false);
   const [isHeatmapMode, setIsHeatmapMode] = useState(false);
@@ -222,6 +228,10 @@ export default function IPMCalibration() {
   const [trafficAnalysis, setTrafficAnalysis] = useState<TrafficAnalysisResult | null>(null);
   const recordedFramesRef = useRef<GenerationFrame[]>([]);
   const sessionHeatmapModeRef = useRef(false);
+  const sessionSourceRef = useRef({ cameraId: '', laneId: '' });
+  const multiCameraLanesRef = useRef(multiCameraLanes);
+  multiCameraLanesRef.current = multiCameraLanes;
+  const cameraCalibrationCacheRef = useRef<Record<string, Record<string, LaneCalibrationConfig>>>({});
   const vehicleDotsRef = useRef<any[]>([]);
   vehicleDotsRef.current = transformedVehicles;
 
@@ -272,6 +282,7 @@ export default function IPMCalibration() {
       try {
         const res = await ipmAPI.getCameraConfig(cameraId);
         if (res.code === 200 && res.data?.lanes?.[laneId]) {
+          cameraCalibrationCacheRef.current[cameraId] = res.data.lanes;
           const lane = res.data.lanes[laneId];
           setCameraPoints(lane.camera_points.map((p: number[]) => ({ x: p[0], y: p[1] })));
           setWorldPoints(lane.world_points.map((p: number[]) => ({ x: p[0], y: p[1] })));
@@ -297,6 +308,47 @@ export default function IPMCalibration() {
 
   const activeSandCameras = sandCameras.filter(camera => activeRtspDevices.includes(`rtsp_${camera.id}`));
   const cameraLanes = calibratedLanes[cameraId] || [];
+  // Any active sand-table RTSP stream uses the camera-to-road mapping flow;
+  // with multiple streams their transformed vehicles are merged into one frame.
+  const isMultiCameraMode = activeSandCameras.length > 0;
+  const activeCameraVehicleCount = activeSandCameras.reduce((total, camera) => (
+    total + (payloadsRef.current[`rtsp_${camera.id}`]?.vehicles?.length || 0)
+  ), 0);
+  const configuredMultiCameraCount = activeSandCameras.filter(camera => Boolean(multiCameraLanes[camera.id])).length;
+  const allActiveCamerasMapped = activeSandCameras.length > 0
+    && configuredMultiCameraCount === activeSandCameras.length;
+  const canStartGeneration = isMultiCameraMode
+    ? allActiveCamerasMapped
+    : Boolean(laneId && currentVehicles.length > 0);
+
+  useEffect(() => {
+    const activeCameras = sandCameras.filter(camera => activeRtspDevices.includes(`rtsp_${camera.id}`));
+    const activeCameraIds = new Set(activeCameras.map(camera => camera.id));
+    setMultiCameraLanes(previous => {
+      const next: Record<string, string> = {};
+      let changed = Object.keys(previous).some(id => !activeCameraIds.has(id));
+      for (const camera of activeCameras) {
+        const selectedLane = previous[camera.id] || '';
+        const validLane = (calibratedLanes[camera.id] || []).includes(selectedLane) ? selectedLane : '';
+        next[camera.id] = validLane;
+        if (validLane !== selectedLane || !(camera.id in previous)) changed = true;
+      }
+      return changed ? next : previous;
+    });
+  }, [activeRtspDevices, sandCameras, calibratedLanes]);
+
+  const getCameraCalibration = useCallback(async (targetCameraId: string, targetLaneId: string) => {
+    const cached = cameraCalibrationCacheRef.current[targetCameraId]?.[targetLaneId];
+    if (cached) return cached;
+    try {
+      const response = await ipmAPI.getCameraConfig(targetCameraId);
+      if (response.code !== 200 || !response.data?.lanes) return null;
+      cameraCalibrationCacheRef.current[targetCameraId] = response.data.lanes;
+      return (response.data.lanes[targetLaneId] as LaneCalibrationConfig | undefined) || null;
+    } catch {
+      return null;
+    }
+  }, []);
 
   const normalizeDeviceId = (deviceId?: string) => deviceId?.startsWith('rtsp_') ? deviceId : 'default';
 
@@ -903,6 +955,85 @@ export default function IPMCalibration() {
   };
 
   const doTransform = useCallback(async () => {
+    if (isMultiCameraMode) {
+      const selectedCameras = activeSandCameras
+        .map(camera => ({ camera, laneId: multiCameraLanesRef.current[camera.id] }))
+        .filter(item => Boolean(item.laneId));
+      if (selectedCameras.length !== activeSandCameras.length) {
+        vehicleDotsRef.current = [];
+        setTransformedVehicles([]);
+        return [];
+      }
+
+      const prepared = await Promise.all(selectedCameras.map(async ({ camera, laneId: mappedLaneId }) => {
+        const calibration = await getCameraCalibration(camera.id, mappedLaneId);
+        if (!calibration || !Array.isArray(calibration.camera_points)) return null;
+        const calibrationArea = calibration.camera_points.map(point => ({ x: point[0], y: point[1] }));
+        const sourceVehicles = payloadsRef.current[`rtsp_${camera.id}`]?.vehicles || [];
+        const vehicles = sourceVehicles
+          .map((vehicle: any) => {
+            if (!Array.isArray(vehicle.box) || vehicle.box.length < 4) return null;
+            const cameraPoint = {
+              x: (vehicle.box[0] + vehicle.box[2]) / 2,
+              y: vehicle.box[3],
+            };
+            return isPointInCalibrationArea(cameraPoint, calibrationArea)
+              ? { vehicle, cameraPoint }
+              : null;
+          })
+          .filter((item: any): item is { vehicle: any; cameraPoint: Point } => Boolean(item));
+        return {
+          cameraId: camera.id,
+          laneId: mappedLaneId,
+          vehicles,
+          points: vehicles.map(({ cameraPoint }: { vehicle: any; cameraPoint: Point }) => [cameraPoint.x, cameraPoint.y]),
+        };
+      }));
+      const requests = prepared.filter((item): item is NonNullable<typeof item> => Boolean(item));
+      const requestsWithVehicles = requests.filter(item => item.points.length > 0);
+      if (requestsWithVehicles.length === 0) {
+        vehicleDotsRef.current = [];
+        setTransformedVehicles([]);
+        return [];
+      }
+
+      try {
+        const response = await ipmRequest('/ipm/transform', {
+          method: 'POST',
+          body: JSON.stringify({
+            requests: requestsWithVehicles.map(item => ({
+              camera_id: item.cameraId,
+              lane_id: item.laneId,
+              vehicles: item.points,
+            })),
+          }),
+        });
+        if (response.code !== 200 || !Array.isArray(response.data?.results)) throw new Error('批量坐标转换失败');
+        const nextVehicles = requestsWithVehicles.flatMap(item => {
+          const result = response.data.results.find((candidate: any) => (
+            candidate.camera_id === item.cameraId && candidate.lane_id === item.laneId
+          ));
+          const transformed = Array.isArray(result?.transformed) ? result.transformed : [];
+          return item.vehicles.map(({ vehicle }: { vehicle: any; cameraPoint: Point }, index: number) => ({
+            id: `${item.cameraId}:${vehicle.id ?? index}`,
+            trackId: vehicle.id,
+            class: vehicle.class,
+            camera: item.points[index],
+            world: transformed[index] || null,
+            sourceCamera: item.cameraId,
+            sourceLane: item.laneId,
+          }));
+        });
+        vehicleDotsRef.current = nextVehicles;
+        setTransformedVehicles(nextVehicles);
+        return nextVehicles;
+      } catch {
+        vehicleDotsRef.current = [];
+        setTransformedVehicles([]);
+        return [];
+      }
+    }
+
     if (!laneId || currentVehicles.length === 0) {
       vehicleDotsRef.current = [];
       setTransformedVehicles([]);
@@ -960,7 +1091,7 @@ export default function IPMCalibration() {
       setTransformedVehicles([]);
       return [];
     }
-  }, [cameraId, laneId, currentVehicles, cameraPoints]);
+  }, [activeSandCameras, cameraId, cameraPoints, currentVehicles, getCameraCalibration, isMultiCameraMode, laneId]);
 
   const doTransformRef = useRef(doTransform);
   doTransformRef.current = doTransform;
@@ -1160,6 +1291,12 @@ export default function IPMCalibration() {
   const toggleContinuousGeneration = () => {
     if (generationStatus === 'idle') {
       sessionHeatmapModeRef.current = isHeatmapMode;
+      sessionSourceRef.current = isMultiCameraMode
+        ? {
+            cameraId: `multi-${activeSandCameras.length}-cameras`,
+            laneId: 'mapped-roads',
+          }
+        : { cameraId, laneId };
       recordedFramesRef.current = [];
       setRecordedFrameCount(0);
       setGenerationElapsed(0);
@@ -1339,7 +1476,7 @@ export default function IPMCalibration() {
       ctx.fillText(`智慧交通沙盘 · ${heatmapMode ? '车辆活动热力图' : '车辆位置回放'}`, 18, 25);
       ctx.font = '13px system-ui, sans-serif';
       ctx.fillStyle = 'rgba(226, 232, 240, 0.95)';
-      ctx.fillText(`${cameraId} / ${laneId}    ${(elapsed / 1000).toFixed(1)}s / ${(durationMs / 1000).toFixed(1)}s    当前 ${currentFrame?.vehicles.length ?? 0} 辆`, 18, 47);
+      ctx.fillText(`${sessionSourceRef.current.cameraId} / ${sessionSourceRef.current.laneId}    ${(elapsed / 1000).toFixed(1)}s / ${(durationMs / 1000).toFixed(1)}s    当前 ${currentFrame?.vehicles.length ?? 0} 辆`, 18, 47);
       ctx.restore();
     };
 
@@ -1371,8 +1508,8 @@ export default function IPMCalibration() {
       const video = await videoReady;
       const url = URL.createObjectURL(video);
       const link = document.createElement('a');
-      const safeCameraId = cameraId.replace(/[^a-zA-Z0-9_-]/g, '_') || 'camera';
-      const safeLaneId = laneId.replace(/[^a-zA-Z0-9_-]/g, '_') || 'lane';
+      const safeCameraId = sessionSourceRef.current.cameraId.replace(/[^a-zA-Z0-9_-]/g, '_') || 'camera';
+      const safeLaneId = sessionSourceRef.current.laneId.replace(/[^a-zA-Z0-9_-]/g, '_') || 'lane';
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       link.href = url;
       link.download = `traffic-replay_${safeCameraId}_${safeLaneId}_${timestamp}.webm`;
@@ -1399,8 +1536,8 @@ export default function IPMCalibration() {
     setIsAnalyzingTraffic(true);
     try {
       const response = await trafficAnalysisAPI.analyze({
-        camera_id: cameraId,
-        lane_id: laneId,
+        camera_id: sessionSourceRef.current.cameraId || cameraId,
+        lane_id: sessionSourceRef.current.laneId || laneId,
         capacity: 3,
         frames: frames.map(frame => ({
           timestamp_ms: Math.round(frame.elapsed),
@@ -1545,6 +1682,42 @@ export default function IPMCalibration() {
               );
             })}
           </div>
+          <div className="mt-4 border-t border-[var(--color-border-card)] pt-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold text-[var(--color-text-primary)]">多摄像头热力图道路映射</div>
+                <div className="mt-0.5 text-xs text-[var(--color-text-muted)]">为每一路沙盘摄像头选择其画面对应的 IPM 标定道路</div>
+              </div>
+              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${allActiveCamerasMapped ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'}`}>
+                已配置 {configuredMultiCameraCount}/{activeSandCameras.length}
+              </span>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {activeSandCameras.map(camera => {
+                const lanes = calibratedLanes[camera.id] || [];
+                return (
+                  <label key={`mapping-${camera.id}`} className="rounded-xl border border-[var(--color-border-card)] bg-white/60 p-3 dark:bg-[#17191f]/70">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-[var(--color-text-primary)]">{camera.id} · {camera.name}</span>
+                      <span className="text-[10px] text-[var(--color-text-muted)]">{payloadsRef.current[`rtsp_${camera.id}`]?.vehicles?.length || 0} 辆</span>
+                    </div>
+                    <select
+                      value={multiCameraLanes[camera.id] || ''}
+                      onChange={event => setMultiCameraLanes(previous => ({ ...previous, [camera.id]: event.target.value }))}
+                      disabled={generationStatus !== 'idle' || lanes.length === 0}
+                      className="w-full rounded-lg border border-[var(--color-border-card)] bg-white px-3 py-2 text-xs text-gray-900 outline-none focus:border-blue-500 disabled:opacity-50 dark:bg-[#1C1C22] dark:text-gray-200"
+                    >
+                      <option value="">{lanes.length === 0 ? '暂无标定道路' : '请选择标定道路'}</option>
+                      {lanes.map(mappedLaneId => <option key={mappedLaneId} value={mappedLaneId}>{mappedLaneId}</option>)}
+                    </select>
+                  </label>
+                );
+              })}
+            </div>
+            {isMultiCameraMode && !allActiveCamerasMapped && (
+              <p className="mt-2 text-xs text-amber-400">请为全部活跃摄像头选择标定道路后再开始生成。</p>
+            )}
+          </div>
         </div>
       )}
       {/* Camera ID + Lane ID */}
@@ -1637,7 +1810,9 @@ export default function IPMCalibration() {
                 <Crosshair size={16} className="text-rose-400" /> 俯视坐标验证
               </h3>
               <div className="flex flex-wrap items-center justify-end gap-2">
-                <span className="text-xs text-[var(--color-text-secondary)]">当前 {currentVehicles.length} 辆车</span>
+                <span className="text-xs text-[var(--color-text-secondary)]">
+                  当前 {isMultiCameraMode ? `${activeCameraVehicleCount} 辆 / ${activeSandCameras.length} 路` : `${currentVehicles.length} 辆车`}
+                </span>
                 <button
                   type="button"
                   role="switch"
@@ -1654,14 +1829,14 @@ export default function IPMCalibration() {
                 </button>
                 <button
                   onClick={generateOnce}
-                  disabled={generationStatus !== 'idle' || !laneId || currentVehicles.length === 0}
+                  disabled={generationStatus !== 'idle' || !canStartGeneration}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 >
                   <Crosshair size={12} /> 生成一次
                 </button>
                 <button
                   onClick={toggleContinuousGeneration}
-                  disabled={generationStatus === 'idle' && (!laneId || currentVehicles.length === 0)}
+                  disabled={generationStatus === 'idle' && !canStartGeneration}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
                     generationStatus !== 'idle'
                       ? 'bg-rose-500/15 text-rose-400 border-rose-500/30 hover:bg-rose-500/25'
@@ -1761,7 +1936,9 @@ export default function IPMCalibration() {
             )}
             {transformedVehicles.length === 0 ? (
               <p className="text-[var(--color-text-muted)] text-sm py-4 text-center">
-                {!laneId ? '请先选择车道 ID' : currentVehicles.length === 0 ? '等待车辆检测数据...' : '转换中...'}
+                {isMultiCameraMode
+                  ? (!allActiveCamerasMapped ? '请先为全部活跃摄像头选择标定道路' : '等待多路车辆检测数据...')
+                  : (!laneId ? '请先选择车道 ID' : currentVehicles.length === 0 ? '等待车辆检测数据...' : '转换中...')}
               </p>
             ) : (
               <div className="overflow-x-auto max-h-[220px] overflow-y-auto">
@@ -1769,6 +1946,7 @@ export default function IPMCalibration() {
                   <thead>
                     <tr className="border-b border-[var(--color-border-card)] text-[var(--color-text-secondary)] uppercase tracking-wider sticky top-0 bg-[var(--color-bg-card)]">
                       <th className="py-2 px-2">ID</th>
+                      <th className="py-2 px-2">摄像头</th>
                       <th className="py-2 px-2">类型</th>
                       <th className="py-2 px-2">摄像坐标</th>
                       <th className="py-2 px-2">俯视坐标</th>
@@ -1778,6 +1956,7 @@ export default function IPMCalibration() {
                     {transformedVehicles.map((v: any, i: number) => (
                       <tr key={i} className="hover:hover:bg-gray-100 dark:hover:bg-[#1C1E24]/40 transition-colors">
                         <td className="py-2 px-2 font-mono text-blue-400">#{v.id}</td>
+                        <td className="py-2 px-2 font-mono text-cyan-400">{v.sourceCamera || cameraId}</td>
                         <td className="py-2 px-2 text-[var(--color-text-primary)] capitalize">{v.class}</td>
                         <td className="py-2 px-2 font-mono text-[var(--color-text-secondary)]">
                           ({v.camera[0].toFixed(0)}, {v.camera[1].toFixed(0)})
